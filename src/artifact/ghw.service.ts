@@ -84,7 +84,9 @@ export class GhwService {
     const lib = isHttps ? https : http;
 
     const connectTimeoutMs = 2000;
-    const readTimeoutMs = 10000;
+    // The history worker can legitimately spend up to 60 seconds waiting on
+    // Fabric, so the Gateway must not abandon a healthy upstream first.
+    const readTimeoutMs = 70000;
 
     return new Promise((resolve, reject) => {
       const options: http.RequestOptions = {

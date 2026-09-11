@@ -5,11 +5,14 @@ import * as http from 'http';
 import * as https from 'https';
 import { EventEmitter } from 'events';
 
+let observedReadTimeoutMs: number | undefined;
+
 // Helper to create a mock IncomingMessage with minimal behavior
 function createMockResponse(statusCode: number, body: string) {
   const res = new http.IncomingMessage(null as any);
   res.statusCode = statusCode as any;
   res.setTimeout = (ms: number, cb: () => void) => {
+    observedReadTimeoutMs = ms;
     setTimeout(cb, 0);
     return res as any;
   };
@@ -33,6 +36,7 @@ describe('GhwService', () => {
   let requestSpy: jest.SpyInstance;
 
   beforeEach(async () => {
+    observedReadTimeoutMs = undefined;
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         GhwService,
@@ -101,6 +105,7 @@ describe('GhwService', () => {
     expect(call.path).toContain('limit=2');
     expect(call.path).toContain('order=desc');
     expect(call.path).toContain('includeValue=true');
+    expect(observedReadTimeoutMs).toBe(70000);
   });
 
   it('routes workflow history to the organization-bound worker', async () => {

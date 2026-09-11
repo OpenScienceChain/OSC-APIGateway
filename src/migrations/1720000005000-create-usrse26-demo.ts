@@ -73,7 +73,6 @@ export class CreateUsrse26Demo1720000005000 implements MigrationInterface {
         "organizationId" uuid NOT NULL,
         "eventName" text NOT NULL,
         "resourceType" character varying(20),
-        "resourceId" character varying(64),
         "occurredAt" TIMESTAMP NOT NULL,
         "retentionExpiresAt" TIMESTAMP NOT NULL,
         CONSTRAINT "PK_demo_event" PRIMARY KEY ("id"),

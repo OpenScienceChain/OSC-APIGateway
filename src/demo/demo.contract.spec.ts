@@ -600,6 +600,48 @@ describe('US-RSE 2026 demonstration contract', () => {
     }
   });
 
+  it('does not retain record identifiers in analytics while preserving aggregate counters', async () => {
+    const guest = await createGuest();
+    const artifact = await mutate(guest).artifact(artifactBody()).expect(201);
+    const workflow = await mutate(guest)
+      .workflow({
+        requestId: randomUUID(),
+        artifactIds: [artifact.body.id],
+        researchContext: 'REPRODUCIBLE_ANALYSIS',
+      })
+      .expect(201);
+
+    await request(app.getHttpServer())
+      .get(`/api/v1/demo/artifacts/${artifact.body.id}/history`)
+      .set('Cookie', guest.cookie)
+      .expect(200);
+    await request(app.getHttpServer())
+      .get(`/api/v1/demo/workflows/${workflow.body.id}/history`)
+      .set('Cookie', guest.cookie)
+      .expect(200);
+
+    const eventRows = (await dataSource.query(
+      'SELECT * FROM "demo_event"',
+    )) as Array<Record<string, unknown>>;
+    expect(eventRows.length).toBeGreaterThan(0);
+    for (const row of eventRows) {
+      expect(row).not.toHaveProperty('resourceId');
+    }
+    const serializedRows = JSON.stringify(eventRows);
+    expect(serializedRows).not.toContain(artifact.body.id);
+    expect(serializedRows).not.toContain(workflow.body.id);
+
+    const counters = await request(app.getHttpServer())
+      .get('/api/v1/demo/counters')
+      .expect(200);
+    expect(counters.body).toMatchObject({
+      anonymousBrowserSessions: 1,
+      acceptedArtifacts: 1,
+      acceptedWorkflows: 1,
+      provenanceHistoryViews: 2,
+    });
+  });
+
   it('fails closed to READ_ONLY at the global limit while preserving reads and privacy-safe events', async () => {
     const guest = await createGuest();
     await dataSource.getRepository(DemoRuntimeEntity).update('usrse26', {

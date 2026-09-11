@@ -19,9 +19,6 @@ export class DemoEventEntity {
   @Column({ nullable: true, length: 20 })
   resourceType: string | null;
 
-  @Column({ nullable: true, length: 64 })
-  resourceId: string | null;
-
   @Column({
     type: process.env.NODE_ENV === 'test' ? 'datetime' : 'timestamp',
   })

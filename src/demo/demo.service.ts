@@ -730,7 +730,6 @@ export class DemoService {
           principal,
           DemoEventName.ARTIFACT_ACCEPTED,
           'artifact',
-          existing.recordId,
         );
       }
       return this.artifactResponse(existing.recordId, principal);
@@ -783,7 +782,6 @@ export class DemoService {
       principal,
       DemoEventName.ARTIFACT_ACCEPTED,
       'artifact',
-      recordId,
     );
     return this.artifactResponse(recordId, principal);
   }
@@ -822,7 +820,6 @@ export class DemoService {
           principal,
           DemoEventName.WORKFLOW_ACCEPTED,
           'workflow',
-          existing.recordId,
         );
       }
       return this.workflowResponse(existing.recordId, principal);
@@ -886,7 +883,6 @@ export class DemoService {
       principal,
       DemoEventName.WORKFLOW_ACCEPTED,
       'workflow',
-      recordId,
     );
     return this.workflowResponse(recordId, principal);
   }
@@ -959,7 +955,6 @@ export class DemoService {
       principal,
       DemoEventName.HISTORY_VIEWED,
       'artifact',
-      recordId,
     );
     return result;
   }
@@ -991,7 +986,6 @@ export class DemoService {
       principal,
       DemoEventName.HISTORY_VIEWED,
       'workflow',
-      recordId,
     );
     return {
       ...result,
@@ -1035,7 +1029,6 @@ export class DemoService {
       | DemoSessionEntity,
     eventName: DemoEventName,
     resourceType: string | null = null,
-    resourceId: string | null = null,
   ) {
     const now = new Date();
     try {
@@ -1045,7 +1038,6 @@ export class DemoService {
           organizationId: principal.organizationId,
           eventName,
           resourceType,
-          resourceId,
           occurredAt: now,
           retentionExpiresAt: this.plusDays(now),
         }),

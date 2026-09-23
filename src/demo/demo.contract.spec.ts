@@ -49,6 +49,7 @@ describe('US-RSE 2026 demonstration contract', () => {
   let app: INestApplication;
   let dataSource: DataSource;
   let demoService: DemoService;
+  let ghwService: GhwService;
   let artifactCreates: number;
 
   beforeEach(async () => {
@@ -233,6 +234,7 @@ describe('US-RSE 2026 demonstration contract', () => {
     await app.init();
     dataSource = module.get(DataSource);
     demoService = module.get(DemoService);
+    ghwService = module.get(GhwService);
 
     const organizations = dataSource.getRepository(OrganizationEntity);
     await organizations.save([
@@ -640,6 +642,280 @@ describe('US-RSE 2026 demonstration contract', () => {
       acceptedWorkflows: 1,
       provenanceHistoryViews: 2,
     });
+  });
+
+  it('serves anonymous cross-org detail and metadata-only history while mine stays session-bound', async () => {
+    const owner = await createGuest();
+    const sameOrg = await createGuest();
+    const otherOrg = await createGuest(DemoOrganizationSlug.CITIZEN_SCIENCE);
+    const artifact = await mutate(owner).artifact(artifactBody()).expect(201);
+    const workflow = await mutate(owner)
+      .workflow({
+        requestId: randomUUID(),
+        artifactIds: [artifact.body.id],
+        researchContext: 'REPRODUCIBLE_ANALYSIS',
+      })
+      .expect(201);
+    const base = '/api/v1/demo';
+
+    for (const guest of [sameOrg, otherOrg]) {
+      await request(app.getHttpServer())
+        .get(`${base}/mine/artifacts`)
+        .set('Cookie', guest.cookie)
+        .expect(200, []);
+      await request(app.getHttpServer())
+        .get(`${base}/mine/workflows`)
+        .set('Cookie', guest.cookie)
+        .expect(200, []);
+    }
+    await request(app.getHttpServer())
+      .get(`${base}/mine/artifacts`)
+      .expect(401);
+    expect(
+      (
+        await request(app.getHttpServer())
+          .get(`${base}/mine/artifacts`)
+          .set('Cookie', owner.cookie)
+          .expect(200)
+      ).body.map((item: any) => item.id),
+    ).toEqual([artifact.body.id]);
+    expect(
+      (
+        await request(app.getHttpServer())
+          .get(`${base}/mine/workflows`)
+          .set('Cookie', owner.cookie)
+          .expect(200)
+      ).body[0].artifactIds,
+    ).toEqual([artifact.body.id]);
+
+    for (const [type, id] of [
+      ['artifacts', artifact.body.id],
+      ['workflows', workflow.body.id],
+    ]) {
+      const detail = await request(app.getHttpServer())
+        .get(`${base}/public/${type}/${id}`)
+        .expect(200);
+      expect(detail.body).toMatchObject({
+        id,
+        organizationSlug: DemoOrganizationSlug.NEUROSCIENCE_GATEWAY,
+      });
+      expect(Object.keys(detail.body).sort()).toEqual(
+        (type === 'artifacts'
+          ? [
+              'id',
+              'title',
+              'description',
+              'organization',
+              'organizationSlug',
+              'contributorAlias',
+              'researchContext',
+              'submissionState',
+              'submittedAt',
+              'verified',
+            ]
+          : [
+              'id',
+              'title',
+              'description',
+              'organization',
+              'organizationSlug',
+              'contributorAlias',
+              'researchContext',
+              'submissionState',
+              'submittedAt',
+              'artifactIds',
+            ]
+        ).sort(),
+      );
+      expect(Object.keys(detail.body).join(',')).not.toMatch(
+        /fingerprint|manifest|filename|email|session|footprint|submissionError/i,
+      );
+      expect(
+        (
+          await request(app.getHttpServer())
+            .get(`${base}/public/${type}/${id}/history`)
+            .expect(200)
+        ).body,
+      ).toEqual({ items: [], count: 0 });
+    }
+    expect(ghwService.fetchHistory).not.toHaveBeenCalled();
+
+    await dataSource.getRepository(ArtifactEntity).update(artifact.body.id, {
+      submissionState: SubmissionState.SUCCESS,
+      blockchainTxId: 'artifact-confirmed',
+    });
+    await dataSource.getRepository(WorkflowEntity).update(workflow.body.id, {
+      submissionState: SubmissionState.SUCCESS,
+      blockchainTxId: 'workflow-confirmed',
+    });
+    (ghwService.fetchHistory as jest.Mock).mockResolvedValue({
+      items: [
+        {
+          txId: 'tx-1',
+          timestamp: '2026-09-23T00:00:00Z',
+          isDelete: false,
+          value: { submitterEmail: 'secret@example.org' },
+          fingerprint: 'secret',
+        },
+      ],
+      count: 1,
+      hasMore: false,
+      rawFabric: 'secret',
+    });
+    for (const [type, id] of [
+      ['artifacts', artifact.body.id],
+      ['workflows', workflow.body.id],
+    ]) {
+      const detail = await request(app.getHttpServer())
+        .get(`${base}/public/${type}/${id}`)
+        .expect(200);
+      expect(detail.body.blockchainTxId).toContain('confirmed');
+      const history = await request(app.getHttpServer())
+        .get(`${base}/public/${type}/${id}/history`)
+        .expect(200);
+      expect(history.body).toEqual({
+        items: [
+          {
+            txId: 'tx-1',
+            timestamp: '2026-09-23T00:00:00Z',
+            isDelete: false,
+          },
+        ],
+        count: 1,
+      });
+    }
+    expect(
+      (ghwService.fetchHistory as jest.Mock).mock.calls.every(
+        ([query]) => query.includeValue === false && query.limit === 100,
+      ),
+    ).toBe(true);
+    await request(app.getHttpServer())
+      .get(`${base}/artifacts/${artifact.body.id}`)
+      .set('Cookie', otherOrg.cookie)
+      .expect(403);
+    await request(app.getHttpServer())
+      .get(`${base}/workflows/${workflow.body.id}/history`)
+      .set('Cookie', otherOrg.cookie)
+      .expect(403);
+  });
+
+  it('fails closed for spoofed, private, non-demo, deleted, expired and stale public reads', async () => {
+    const guest = await createGuest();
+    const artifact = await mutate(guest).artifact(artifactBody()).expect(201);
+    const workflow = await mutate(guest)
+      .workflow({
+        requestId: randomUUID(),
+        artifactIds: [artifact.body.id],
+        researchContext: 'REPRODUCIBLE_ANALYSIS',
+      })
+      .expect(201);
+    const artifacts = dataSource.getRepository(ArtifactEntity);
+    const workflows = dataSource.getRepository(WorkflowEntity);
+    const contributions = dataSource.getRepository(DemoContributionEntity);
+    const base = '/api/v1/demo/public';
+    const detail = (type: string, id: string) =>
+      request(app.getHttpServer()).get(`${base}/${type}/${id}`);
+    const history = (type: string, id: string) =>
+      request(app.getHttpServer()).get(`${base}/${type}/${id}/history`);
+
+    const original = await artifacts.findOneOrFail({
+      where: { id: artifact.body.id },
+      relations: { organization: true },
+    });
+    const product = await artifacts.save(
+      artifacts.create({
+        ...original,
+        id: randomUUID(),
+        keywords: ['product'],
+        submitterEmail: 'user@example.org',
+      }),
+    );
+    await detail('artifacts', product.id).expect(404);
+    await history('artifacts', product.id).expect(404);
+    const contribution = await contributions.findOneByOrFail({
+      recordId: artifact.body.id,
+    });
+    await contributions.save(
+      contributions.create({
+        ...contribution,
+        id: randomUUID(),
+        recordId: product.id,
+        requestId: randomUUID(),
+      }),
+    );
+    await detail('artifacts', product.id).expect(404);
+    await history('artifacts', product.id).expect(404);
+
+    const storedWorkflow = await workflows.findOneOrFail({
+      where: { id: workflow.body.id },
+      relations: { artifacts: true },
+    });
+    storedWorkflow.artifacts.push(product);
+    await workflows.save(storedWorkflow);
+    expect(
+      (await detail('workflows', workflow.body.id).expect(200)).body
+        .artifactIds,
+    ).toEqual([artifact.body.id]);
+
+    const otherOrganization = await dataSource
+      .getRepository(OrganizationEntity)
+      .findOneByOrFail({ slug: DemoOrganizationSlug.CITIZEN_SCIENCE });
+    await contributions.update(
+      { recordId: artifact.body.id },
+      {
+        organizationId: otherOrganization.id,
+      },
+    );
+    await detail('artifacts', artifact.body.id).expect(404);
+    await history('artifacts', artifact.body.id).expect(404);
+    await contributions.update(
+      { recordId: artifact.body.id },
+      {
+        organizationId: contribution.organizationId,
+      },
+    );
+
+    await artifacts.update(artifact.body.id, {
+      visibility: RecordVisibility.PRIVATE,
+    });
+    await detail('artifacts', artifact.body.id).expect(404);
+    await history('artifacts', artifact.body.id).expect(404);
+    await artifacts.update(artifact.body.id, {
+      visibility: RecordVisibility.PUBLIC,
+      archivedAt: new Date(),
+    });
+    await detail('artifacts', artifact.body.id).expect(404);
+    await artifacts.update(artifact.body.id, { archivedAt: null });
+    await workflows.update(workflow.body.id, {
+      visibility: RecordVisibility.PRIVATE,
+    });
+    await detail('workflows', workflow.body.id).expect(404);
+    await history('workflows', workflow.body.id).expect(404);
+    await workflows.update(workflow.body.id, {
+      visibility: RecordVisibility.PUBLIC,
+    });
+    await contributions.update(
+      { recordId: workflow.body.id },
+      {
+        retentionExpiresAt: new Date(Date.now() - 1000),
+      },
+    );
+    await detail('workflows', workflow.body.id).expect(404);
+    await history('workflows', workflow.body.id).expect(404);
+    await contributions.update(
+      { recordId: workflow.body.id },
+      {
+        retentionExpiresAt: new Date(Date.now() + 60_000),
+      },
+    );
+    await workflows.delete(workflow.body.id);
+    await detail('workflows', workflow.body.id).expect(404);
+    await history('workflows', workflow.body.id).expect(404);
+    await dataSource.getRepository(DemoRuntimeEntity).update('usrse26', {
+      closesAt: new Date(Date.now() - 1000),
+    });
+    await detail('artifacts', artifact.body.id).expect(404);
+    await history('artifacts', artifact.body.id).expect(404);
   });
 
   it('fails closed to READ_ONLY at the global limit while preserving reads and privacy-safe events', async () => {

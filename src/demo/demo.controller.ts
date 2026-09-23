@@ -13,6 +13,7 @@ import {
 } from '@nestjs/common';
 import { Request, Response } from 'express';
 import { DEMO_COOKIE_NAME } from './demo.constants';
+import { DemoContributionType } from './demo.enums';
 import { DemoService } from './demo.service';
 import { DemoPrincipal, DemoSessionResult } from './demo.types';
 import { CreateDemoArtifactDto } from './dto/create-demo-artifact.dto';
@@ -66,6 +67,58 @@ export class DemoController {
   @Get('workflows')
   listWorkflows(@Query('organization') organization?: string) {
     return this.demoService.listPublicWorkflows(organization);
+  }
+
+  @Get('mine/artifacts')
+  @UseGuards(DemoAuthGuard)
+  mineArtifacts(@Req() request: DemoRequest) {
+    return this.demoService.listMine(
+      request.user,
+      DemoContributionType.ARTIFACT,
+    );
+  }
+
+  @Get('mine/workflows')
+  @UseGuards(DemoAuthGuard)
+  mineWorkflows(@Req() request: DemoRequest) {
+    return this.demoService.listMine(
+      request.user,
+      DemoContributionType.WORKFLOW,
+    );
+  }
+
+  @Get('public/artifacts/:id')
+  publicArtifact(@Param('id') id: string) {
+    return this.demoService.publicDetail(DemoContributionType.ARTIFACT, id);
+  }
+
+  @Get('public/artifacts/:id/history')
+  publicArtifactHistory(
+    @Param('id') id: string,
+    @Headers('x-correlation-id') correlationId?: string,
+  ) {
+    return this.demoService.publicHistory(
+      DemoContributionType.ARTIFACT,
+      id,
+      correlationId,
+    );
+  }
+
+  @Get('public/workflows/:id')
+  publicWorkflow(@Param('id') id: string) {
+    return this.demoService.publicDetail(DemoContributionType.WORKFLOW, id);
+  }
+
+  @Get('public/workflows/:id/history')
+  publicWorkflowHistory(
+    @Param('id') id: string,
+    @Headers('x-correlation-id') correlationId?: string,
+  ) {
+    return this.demoService.publicHistory(
+      DemoContributionType.WORKFLOW,
+      id,
+      correlationId,
+    );
   }
 
   @Post('session')

@@ -799,6 +799,69 @@ describe('US-RSE 2026 demonstration contract', () => {
       .expect(403);
   });
 
+  it('keeps guarded detail, status and raw history exclusive to the contributing session', async () => {
+    const owner = await createGuest();
+    const peer = await createGuest();
+    const artifact = await mutate(owner).artifact(artifactBody()).expect(201);
+    const workflow = await mutate(owner)
+      .workflow({
+        requestId: randomUUID(),
+        artifactIds: [artifact.body.id],
+        researchContext: 'REPRODUCIBLE_ANALYSIS',
+      })
+      .expect(201);
+    const base = '/api/v1/demo';
+    for (const [type, id] of [
+      ['artifacts', artifact.body.id],
+      ['workflows', workflow.body.id],
+    ]) {
+      for (const suffix of ['', '/history']) {
+        await request(app.getHttpServer())
+          .get(`${base}/${type}/${id}${suffix}`)
+          .expect(401);
+        await request(app.getHttpServer())
+          .get(`${base}/${type}/${id}${suffix}`)
+          .set('Cookie', peer.cookie)
+          .expect(403);
+      }
+      const owned = await request(app.getHttpServer())
+        .get(`${base}/${type}/${id}`)
+        .set('Cookie', owner.cookie)
+        .expect(200);
+      expect(owned.body).toMatchObject({
+        id,
+        submissionState: SubmissionState.PENDING,
+      });
+      await request(app.getHttpServer())
+        .get(`${base}/${type}/${id}/history`)
+        .set('Cookie', owner.cookie)
+        .expect(200);
+    }
+    await dataSource.getRepository(ArtifactEntity).update(artifact.body.id, {
+      submissionState: SubmissionState.SUCCESS,
+    });
+    await dataSource.getRepository(WorkflowEntity).update(workflow.body.id, {
+      submissionState: SubmissionState.SUCCESS,
+    });
+    for (const [type, id] of [
+      ['artifacts', artifact.body.id],
+      ['workflows', workflow.body.id],
+    ]) {
+      expect(
+        (
+          await request(app.getHttpServer())
+            .get(`${base}/${type}/${id}`)
+            .set('Cookie', owner.cookie)
+            .expect(200)
+        ).body.submissionState,
+      ).toBe(SubmissionState.SUCCESS);
+      await request(app.getHttpServer())
+        .get(`${base}/${type}/${id}`)
+        .set('Cookie', peer.cookie)
+        .expect(403);
+    }
+  });
+
   it('limits public lists and session reads to current-run demo contributions', async () => {
     const guest = await createGuest();
     const artifact = await mutate(guest).artifact(artifactBody()).expect(201);
@@ -898,6 +961,14 @@ describe('US-RSE 2026 demonstration contract', () => {
             .expect(200)
         ).body,
       ).toEqual([]);
+      await request(app.getHttpServer())
+        .get(`${base}/${type}/${id}`)
+        .set('Cookie', guest.cookie)
+        .expect(403);
+      await request(app.getHttpServer())
+        .get(`${base}/${type}/${id}/history`)
+        .set('Cookie', guest.cookie)
+        .expect(403);
     }
     await contributions.update(
       { recordId: workflow.body.id },

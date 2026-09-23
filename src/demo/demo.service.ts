@@ -1205,10 +1205,10 @@ export class DemoService {
   }
 
   async artifactResponse(recordId: string, principal: DemoPrincipal) {
-    await this.assertDemoRecordOrganization(
+    await this.assertDemoRecordSession(
       DemoContributionType.ARTIFACT,
       recordId,
-      principal.organizationId,
+      principal,
     );
     const artifact = await this.artifactService.findOne(
       recordId,
@@ -1230,10 +1230,10 @@ export class DemoService {
   }
 
   async workflowResponse(recordId: string, principal: DemoPrincipal) {
-    await this.assertDemoRecordOrganization(
+    await this.assertDemoRecordSession(
       DemoContributionType.WORKFLOW,
       recordId,
-      principal.organizationId,
+      principal,
     );
     const workflow = await this.workflowService.findOne(
       recordId,
@@ -1257,10 +1257,10 @@ export class DemoService {
     recordId: string,
     correlationId?: string,
   ) {
-    await this.assertDemoRecordOrganization(
+    await this.assertDemoRecordSession(
       DemoContributionType.ARTIFACT,
       recordId,
-      principal.organizationId,
+      principal,
     );
     const result = await this.artifactService.getHistory(
       recordId,
@@ -1281,10 +1281,10 @@ export class DemoService {
     recordId: string,
     correlationId?: string,
   ) {
-    await this.assertDemoRecordOrganization(
+    await this.assertDemoRecordSession(
       DemoContributionType.WORKFLOW,
       recordId,
-      principal.organizationId,
+      principal,
     );
     await this.workflowService.findOne(recordId, principal.organizationId);
     const result = await this.ghwService.fetchHistory(
@@ -1310,18 +1310,17 @@ export class DemoService {
     };
   }
 
-  private async assertDemoRecordOrganization(
+  private async assertDemoRecordSession(
     recordType: DemoContributionType,
     recordId: string,
-    organizationId: string,
+    principal: DemoPrincipal,
   ): Promise<void> {
-    const contribution = await this.contributions.findOneBy({
-      recordType,
-      recordId,
-    });
-    if (!contribution || contribution.organizationId !== organizationId) {
+    try {
+      await this.demoRecord(recordType, recordId, false, principal);
+    } catch (error) {
+      if (!(error instanceof NotFoundException)) throw error;
       throw new ForbiddenException(
-        'The demonstration record is not available to this organization',
+        'The demonstration record is not available to this session',
       );
     }
   }

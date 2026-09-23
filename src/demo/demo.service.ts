@@ -20,7 +20,7 @@ import {
   randomUUID,
   timingSafeEqual,
 } from 'crypto';
-import { DataSource, In, IsNull, LessThan, Repository } from 'typeorm';
+import { Between, DataSource, In, IsNull, LessThan, Repository } from 'typeorm';
 import { ArtifactEntity } from '../artifact/artifact.entity';
 import { ArtifactService } from '../artifact/artifact.service';
 import { SubmissionState } from '../artifact/enums/submission-state.enum';
@@ -227,9 +227,22 @@ export class DemoService {
     const organizationSlugs = this.publicOrganizationSlugs(
       requestedOrganization,
     );
+    const runtime = await this.publicReadWindow();
+    const contributions = await this.currentContributions(
+      DemoContributionType.ARTIFACT,
+      runtime,
+    );
+    if (!contributions.length) return [];
+    const byId = new Map(
+      contributions.map((contribution) => [
+        contribution.recordId,
+        contribution,
+      ]),
+    );
     const artifacts = await this.artifacts.find({
       relations: { organization: true },
       where: {
+        id: In([...byId.keys()]),
         visibility: RecordVisibility.PUBLIC,
         archivedAt: IsNull(),
         organization: { slug: In(organizationSlugs) },
@@ -237,50 +250,83 @@ export class DemoService {
       order: { submittedAt: 'DESC' },
       take: DEMO_EVENT_ARTIFACT_LIMIT,
     });
-    return artifacts.map((artifact) => ({
-      id: artifact.id,
-      title: artifact.title,
-      description: artifact.description,
-      organization: artifact.organization.name,
-      organizationSlug: artifact.organization.slug,
-      contributorAlias: artifact.submitterUsername,
-      researchContext:
-        artifact.keywords.find((keyword) => keyword !== 'usrse26-demo') || null,
-      verified: artifact.verified,
-      submissionState: artifact.submissionState,
-      submittedAt: artifact.submittedAt,
-    }));
+    return artifacts
+      .filter((artifact) =>
+        this.isDemoRecord(artifact, byId.get(artifact.id), runtime, true),
+      )
+      .map((artifact) => ({
+        id: artifact.id,
+        title: artifact.title,
+        description: artifact.description,
+        organization: artifact.organization.name,
+        organizationSlug: artifact.organization.slug,
+        contributorAlias: artifact.submitterUsername,
+        researchContext:
+          artifact.keywords.find((keyword) => keyword !== 'usrse26-demo') ||
+          null,
+        verified: artifact.verified,
+        submissionState: artifact.submissionState,
+        submittedAt: artifact.submittedAt,
+      }));
   }
 
   async listPublicWorkflows(requestedOrganization?: string) {
     const organizationSlugs = this.publicOrganizationSlugs(
       requestedOrganization,
     );
+    const runtime = await this.publicReadWindow();
+    const contributions = await this.currentContributions(
+      DemoContributionType.WORKFLOW,
+      runtime,
+    );
+    if (!contributions.length) return [];
+    const byId = new Map(
+      contributions.map((contribution) => [
+        contribution.recordId,
+        contribution,
+      ]),
+    );
     const workflows = await this.workflows.find({
       relations: { organization: true, artifacts: true },
       where: {
+        id: In([...byId.keys()]),
         visibility: RecordVisibility.PUBLIC,
         organization: { slug: In(organizationSlugs) },
       },
       order: { submittedAt: 'DESC' },
       take: DEMO_EVENT_WORKFLOW_LIMIT,
     });
-    return workflows.map((workflow) => ({
-      id: workflow.id,
-      title: workflow.title,
-      description: workflow.description,
-      organization: workflow.organization.name,
-      organizationSlug: workflow.organization.slug,
-      contributorAlias: workflow.submitterUsername,
-      researchContext:
-        workflow.keywords.find((keyword) => keyword !== 'usrse26-demo') || null,
-      artifactIds: workflow.artifacts.map((artifact) => artifact.id),
-      submissionState: workflow.submissionState,
-      submittedAt: workflow.submittedAt,
-    }));
+    return Promise.all(
+      workflows
+        .filter((workflow) =>
+          this.isDemoRecord(workflow, byId.get(workflow.id), runtime, true),
+        )
+        .map(async (workflow) => {
+          const detail = await this.publicShape({
+            contribution: byId.get(workflow.id)!,
+            record: workflow,
+            organization: workflow.organization,
+            runtime,
+          });
+          return {
+            id: workflow.id,
+            title: workflow.title,
+            description: workflow.description,
+            organization: workflow.organization.name,
+            organizationSlug: workflow.organization.slug,
+            contributorAlias: workflow.submitterUsername,
+            researchContext:
+              workflow.keywords.find((keyword) => keyword !== 'usrse26-demo') ||
+              null,
+            artifactIds: 'artifactIds' in detail ? detail.artifactIds : [],
+            submissionState: workflow.submissionState,
+            submittedAt: workflow.submittedAt,
+          };
+        }),
+    );
   }
 
-  private async publicReadWindow() {
+  private async publicReadWindow(): Promise<DemoRuntimeEntity> {
     const runtime = await this.ensureRuntime();
     const now = new Date();
     if (
@@ -292,6 +338,52 @@ export class DemoService {
     ) {
       throw new NotFoundException('Demonstration record is unavailable');
     }
+    return runtime;
+  }
+
+  private async currentContributions(
+    recordType: DemoContributionType,
+    runtime: DemoRuntimeEntity,
+  ) {
+    const now = new Date();
+    const contributions = await this.contributions.find({
+      where: {
+        recordType,
+        acceptedAt: Between(runtime.opensAt, runtime.closesAt),
+      },
+    });
+    return contributions.filter(
+      (contribution) =>
+        contribution.acceptedAt < runtime.closesAt &&
+        contribution.retentionExpiresAt > now,
+    );
+  }
+
+  private isDemoRecord(
+    record: ArtifactEntity | WorkflowEntity | null,
+    contribution: DemoContributionEntity | undefined,
+    runtime: DemoRuntimeEntity,
+    publicOnly: boolean,
+  ): boolean {
+    const organization = record?.organization as OrganizationEntity | undefined;
+    return !!(
+      contribution &&
+      record &&
+      organization &&
+      contribution.acceptedAt >= runtime.opensAt &&
+      contribution.acceptedAt < runtime.closesAt &&
+      contribution.retentionExpiresAt > new Date() &&
+      organization.id === contribution.organizationId &&
+      record.keywords?.includes('usrse26-demo') &&
+      /^guest-[a-f0-9]+@demo\.invalid$/.test(record.submitterEmail) &&
+      Object.values(DemoOrganizationSlug).includes(
+        organization.slug as DemoOrganizationSlug,
+      ) &&
+      organization.status === OrganizationStatus.ACTIVE &&
+      organization.archivedAt === null &&
+      (!publicOnly || record.visibility === RecordVisibility.PUBLIC) &&
+      (!(record instanceof ArtifactEntity) || record.archivedAt === null)
+    );
   }
 
   private async demoRecord(
@@ -299,6 +391,7 @@ export class DemoService {
     recordId: string,
     publicOnly: boolean,
     principal?: DemoPrincipal,
+    currentRuntime?: DemoRuntimeEntity,
   ) {
     if (
       !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(
@@ -307,13 +400,13 @@ export class DemoService {
     ) {
       throw new NotFoundException('Demonstration record is unavailable');
     }
+    const runtime = currentRuntime || (await this.publicReadWindow());
     const contribution = await this.contributions.findOneBy({
       recordType,
       recordId,
     });
     if (
       !contribution ||
-      contribution.retentionExpiresAt <= new Date() ||
       (principal &&
         (contribution.sessionHash !== principal.sessionHash ||
           contribution.organizationId !== principal.organizationId))
@@ -330,31 +423,21 @@ export class DemoService {
             where: { id: recordId },
             relations: { organization: true, artifacts: true },
           });
-    const organization = record?.organization as OrganizationEntity | undefined;
-    if (
-      !record ||
-      !organization ||
-      organization.id !== contribution.organizationId ||
-      !record.keywords?.includes('usrse26-demo') ||
-      !/^guest-[a-f0-9]+@demo\.invalid$/.test(record.submitterEmail) ||
-      !Object.values(DemoOrganizationSlug).includes(
-        organization.slug as DemoOrganizationSlug,
-      ) ||
-      organization.status !== OrganizationStatus.ACTIVE ||
-      organization.archivedAt !== null ||
-      (publicOnly && record.visibility !== RecordVisibility.PUBLIC) ||
-      (recordType === DemoContributionType.ARTIFACT &&
-        (record as ArtifactEntity).archivedAt !== null)
-    ) {
+    if (!this.isDemoRecord(record, contribution, runtime, publicOnly)) {
       throw new NotFoundException('Demonstration record is unavailable');
     }
-    return { contribution, record, organization };
+    return {
+      contribution,
+      record,
+      organization: record.organization as OrganizationEntity,
+      runtime,
+    };
   }
 
   private async publicShape(
     data: Awaited<ReturnType<DemoService['demoRecord']>>,
   ) {
-    const { contribution, record, organization } = data;
+    const { contribution, record, organization, runtime } = data;
     const common = {
       id: record.id,
       title: record.title,
@@ -383,7 +466,12 @@ export class DemoService {
       organizationId: organization.id,
     });
     const validIds = linkedContributions
-      .filter((linked) => linked.retentionExpiresAt > new Date())
+      .filter(
+        (linked) =>
+          linked.acceptedAt >= runtime.opensAt &&
+          linked.acceptedAt < runtime.closesAt &&
+          linked.retentionExpiresAt > new Date(),
+      )
       .map((linked) => linked.recordId);
     const publicArtifacts = validIds.length
       ? await this.artifacts.find({
@@ -411,11 +499,14 @@ export class DemoService {
   }
 
   async publicDetail(recordType: DemoContributionType, recordId: string) {
-    await this.publicReadWindow();
-    return this.publicShape(await this.demoRecord(recordType, recordId, true));
+    const runtime = await this.publicReadWindow();
+    return this.publicShape(
+      await this.demoRecord(recordType, recordId, true, undefined, runtime),
+    );
   }
 
   async listMine(principal: DemoPrincipal, recordType: DemoContributionType) {
+    const runtime = await this.publicReadWindow();
     const contributions = await this.contributions.find({
       where: {
         sessionHash: principal.sessionHash,
@@ -434,6 +525,7 @@ export class DemoService {
               contribution.recordId,
               false,
               principal,
+              runtime,
             ),
           ),
         );
@@ -449,11 +541,13 @@ export class DemoService {
     recordId: string,
     correlationId?: string,
   ) {
-    await this.publicReadWindow();
+    const runtime = await this.publicReadWindow();
     const { record, organization } = await this.demoRecord(
       recordType,
       recordId,
       true,
+      undefined,
+      runtime,
     );
     if (record.submissionState !== SubmissionState.SUCCESS) {
       return { items: [], count: 0 };
@@ -1017,6 +1111,32 @@ export class DemoService {
           'The request identifier was already used with a different workflow payload',
         );
       }
+    }
+
+    const runtime = await this.ensureRuntime();
+    for (const artifactId of dto.artifactIds) {
+      let artifact: ArtifactEntity;
+      try {
+        const eligible = await this.demoRecord(
+          DemoContributionType.ARTIFACT,
+          artifactId,
+          true,
+          principal,
+          runtime,
+        );
+        artifact = eligible.record as ArtifactEntity;
+      } catch (error) {
+        if (!(error instanceof NotFoundException)) throw error;
+        throw new ForbiddenException(
+          'Workflows may link only eligible artifacts from this demonstration session',
+        );
+      }
+      if (artifact.submissionState === SubmissionState.FAILED) {
+        throw new ForbiddenException('Workflows may not link failed artifacts');
+      }
+    }
+
+    if (existing) {
       if (!(await this.workflows.existsBy({ id: existing.recordId }))) {
         await this.persistWorkflow(
           existing.recordId,
@@ -1031,17 +1151,6 @@ export class DemoService {
         );
       }
       return this.workflowResponse(existing.recordId, principal);
-    }
-    const ownedArtifacts = await this.artifacts.count({
-      where: {
-        id: In(dto.artifactIds),
-        organization: { id: principal.organizationId },
-      },
-    });
-    if (ownedArtifacts !== dto.artifactIds.length) {
-      throw new ForbiddenException(
-        'Workflows may link only artifacts in the bound demonstration organization',
-      );
     }
 
     const outcome = await this.reserve(

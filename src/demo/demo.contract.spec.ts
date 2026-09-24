@@ -799,6 +799,78 @@ describe('US-RSE 2026 demonstration contract', () => {
       .expect(403);
   });
 
+  it('sanitizes current worker history aliases without returning raw records', async () => {
+    const guest = await createGuest();
+    const artifact = await mutate(guest).artifact(artifactBody()).expect(201);
+    const workflow = await mutate(guest)
+      .workflow({
+        requestId: randomUUID(),
+        artifactIds: [artifact.body.id],
+        researchContext: 'REPRODUCIBLE_ANALYSIS',
+      })
+      .expect(201);
+    await dataSource.getRepository(ArtifactEntity).update(artifact.body.id, {
+      submissionState: SubmissionState.SUCCESS,
+      blockchainTxId: 'confirmed-artifact',
+    });
+    await dataSource.getRepository(WorkflowEntity).update(workflow.body.id, {
+      submissionState: SubmissionState.SUCCESS,
+      blockchainTxId: 'confirmed-workflow',
+    });
+    (ghwService.fetchHistory as jest.Mock).mockResolvedValue({
+      items: [
+        {
+          transactionId: 'worker-tx',
+          committedAt: '2026-09-23T01:02:03Z',
+          deleted: false,
+          record: { submitterEmail: 'private@example.org' },
+        },
+        {
+          txId: null,
+          transactionId: 'fallback-tx',
+          timestamp: null,
+          committedAt: '2026-09-23T02:03:04Z',
+          isDelete: null,
+          deleted: true,
+          record: { fingerprint: 'private' },
+        },
+        {
+          transactionId: 42,
+          committedAt: { invalid: true },
+          deleted: 'false',
+          record: { secret: 'private' },
+        },
+      ],
+      count: 3,
+    });
+    for (const [type, id] of [
+      ['artifacts', artifact.body.id],
+      ['workflows', workflow.body.id],
+    ]) {
+      const response = await request(app.getHttpServer())
+        .get(`/api/v1/demo/public/${type}/${id}/history`)
+        .expect(200);
+      expect(response.body).toEqual({
+        items: [
+          {
+            txId: 'worker-tx',
+            timestamp: '2026-09-23T01:02:03Z',
+            isDelete: false,
+          },
+          {
+            txId: 'fallback-tx',
+            timestamp: '2026-09-23T02:03:04Z',
+            isDelete: true,
+          },
+        ],
+        count: 3,
+      });
+      expect(JSON.stringify(response.body)).not.toMatch(
+        /record|fingerprint|email|private/i,
+      );
+    }
+  });
+
   it('keeps guarded detail, status and raw history exclusive to the contributing session', async () => {
     const owner = await createGuest();
     const peer = await createGuest();

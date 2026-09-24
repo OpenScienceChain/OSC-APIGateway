@@ -571,11 +571,32 @@ export class DemoService {
       ? result.items.slice(0, 100)
       : [];
     return {
-      items: items.map((item: any) => ({
-        txId: item.txId,
-        timestamp: item.timestamp,
-        isDelete: item.isDelete,
-      })),
+      items: items
+        .map((item: unknown) => {
+          if (!item || typeof item !== 'object' || Array.isArray(item)) {
+            return null;
+          }
+          const source = item as Record<string, unknown>;
+          const validString = (value: unknown): value is string =>
+            typeof value === 'string' && value.trim().length > 0;
+          const txId = validString(source.txId)
+            ? source.txId
+            : source.transactionId;
+          const timestamp = validString(source.timestamp)
+            ? source.timestamp
+            : source.committedAt;
+          const isDelete =
+            typeof source.isDelete === 'boolean'
+              ? source.isDelete
+              : source.deleted;
+          const sanitized = {
+            ...(validString(txId) ? { txId } : {}),
+            ...(validString(timestamp) ? { timestamp } : {}),
+            ...(typeof isDelete === 'boolean' ? { isDelete } : {}),
+          };
+          return Object.keys(sanitized).length ? sanitized : null;
+        })
+        .filter((item) => item !== null),
       count: result?.count ?? result?.total ?? 0,
     };
   }

@@ -1111,6 +1111,39 @@ export class DemoService {
           'The request identifier was already used with a different workflow payload',
         );
       }
+      let currentRuntime: DemoRuntimeEntity;
+      try {
+        currentRuntime = await this.publicReadWindow();
+      } catch (error) {
+        if (!(error instanceof NotFoundException)) throw error;
+        throw new ForbiddenException(
+          'The demonstration workflow is not available to this session',
+        );
+      }
+      if (
+        existing.organizationId !== principal.organizationId ||
+        existing.acceptedAt < currentRuntime.opensAt ||
+        existing.acceptedAt >= currentRuntime.closesAt ||
+        existing.retentionExpiresAt <= new Date()
+      ) {
+        throw new ForbiddenException(
+          'The demonstration workflow is not available to this session',
+        );
+      }
+      if (!(await this.workflows.existsBy({ id: existing.recordId }))) {
+        await this.persistWorkflow(
+          existing.recordId,
+          principal,
+          dto,
+          correlationId,
+        );
+        await this.recordInternalEvent(
+          principal,
+          DemoEventName.WORKFLOW_ACCEPTED,
+          'workflow',
+        );
+      }
+      return this.workflowResponse(existing.recordId, principal);
     }
 
     const runtime = await this.ensureRuntime();
@@ -1134,23 +1167,6 @@ export class DemoService {
       if (artifact.submissionState === SubmissionState.FAILED) {
         throw new ForbiddenException('Workflows may not link failed artifacts');
       }
-    }
-
-    if (existing) {
-      if (!(await this.workflows.existsBy({ id: existing.recordId }))) {
-        await this.persistWorkflow(
-          existing.recordId,
-          principal,
-          dto,
-          correlationId,
-        );
-        await this.recordInternalEvent(
-          principal,
-          DemoEventName.WORKFLOW_ACCEPTED,
-          'workflow',
-        );
-      }
-      return this.workflowResponse(existing.recordId, principal);
     }
 
     const outcome = await this.reserve(

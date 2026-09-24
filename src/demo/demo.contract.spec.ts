@@ -1023,6 +1023,45 @@ describe('US-RSE 2026 demonstration contract', () => {
       .expect(403);
   });
 
+  it('retries an accepted workflow after its linked artifact fails or is archived', async () => {
+    const owner = await createGuest();
+    const peer = await createGuest();
+    const artifact = await mutate(owner).artifact(artifactBody()).expect(201);
+    const body = {
+      requestId: randomUUID(),
+      artifactIds: [artifact.body.id],
+      researchContext: 'REPRODUCIBLE_ANALYSIS',
+    };
+    const first = await mutate(owner).workflow(body).expect(201);
+    await dataSource.getRepository(ArtifactEntity).update(artifact.body.id, {
+      submissionState: SubmissionState.FAILED,
+      archivedAt: new Date(),
+    });
+
+    const retry = await mutate(owner).workflow(body).expect(201);
+    expect(retry.body.id).toBe(first.body.id);
+    await mutate(owner)
+      .workflow({
+        ...body,
+        researchContext: 'RESEARCH_DATASET',
+      })
+      .expect(409);
+    await mutate(peer).workflow(body).expect(403);
+
+    await dataSource.getRepository(WorkflowEntity).delete(first.body.id);
+    const recovered = await mutate(owner).workflow(body).expect(201);
+    expect(recovered.body.id).toBe(first.body.id);
+    expect(
+      await dataSource.getRepository(DemoContributionEntity).countBy({
+        recordId: first.body.id,
+      }),
+    ).toBe(1);
+    await request(app.getHttpServer())
+      .get(`/api/v1/demo/workflows/${first.body.id}`)
+      .set('Cookie', peer.cookie)
+      .expect(403);
+  });
+
   it('fails closed for spoofed, private, non-demo, deleted, expired and stale public reads', async () => {
     const guest = await createGuest();
     const artifact = await mutate(guest).artifact(artifactBody()).expect(201);

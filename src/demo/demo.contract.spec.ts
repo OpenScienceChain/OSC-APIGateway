@@ -786,7 +786,7 @@ describe('US-RSE 2026 demonstration contract', () => {
     }
     expect(
       (ghwService.fetchHistory as jest.Mock).mock.calls.every(
-        ([query]) => query.includeValue === false && query.limit === 100,
+        ([query]) => query.includeValue === true && query.limit === 100,
       ),
     ).toBe(true);
     await request(app.getHttpServer())
@@ -869,6 +869,15 @@ describe('US-RSE 2026 demonstration contract', () => {
         /record|fingerprint|email|private/i,
       );
     }
+    expect(
+      (ghwService.fetchHistory as jest.Mock).mock.calls.map(([query]) => ({
+        assetType: query.assetType,
+        includeValue: query.includeValue,
+      })),
+    ).toEqual([
+      { assetType: 'artifact', includeValue: true },
+      { assetType: 'workflow', includeValue: true },
+    ]);
   });
 
   it('keeps guarded detail, status and raw history exclusive to the contributing session', async () => {

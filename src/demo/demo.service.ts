@@ -563,7 +563,7 @@ export class DemoService {
         offset: 0,
         limit: 100,
         order: 'desc',
-        includeValue: false,
+        includeValue: true,
       },
       correlationId || randomUUID(),
     );

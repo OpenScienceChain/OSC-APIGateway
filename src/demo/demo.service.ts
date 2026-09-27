@@ -1730,28 +1730,17 @@ export class DemoService {
       recordId,
       principal,
     );
-    await this.workflowService.findOne(recordId, principal.organizationId);
-    const result = await this.ghwService.fetchHistory(
-      {
-        artifactId: recordId.toLowerCase(),
-        assetType: 'workflow',
-        organizationId: principal.organizationId,
-        offset: 0,
-        limit: 100,
-        order: 'desc',
-        includeValue: true,
-      },
-      correlationId || randomUUID(),
+    const result = await this.publicHistory(
+      DemoContributionType.WORKFLOW,
+      recordId,
+      correlationId,
     );
     await this.recordInternalEvent(
       principal,
       DemoEventName.HISTORY_VIEWED,
       'workflow',
     );
-    return {
-      ...result,
-      nextOffset: result?.hasMore ? 100 : undefined,
-    };
+    return result;
   }
 
   private async assertDemoRecordSession(

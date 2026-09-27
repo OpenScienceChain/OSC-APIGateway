@@ -500,11 +500,7 @@ describe('US-RSE 2026 demonstration contract', () => {
       .get(`/api/v1/demo/workflows/${workflow.body.id}/history`)
       .set('Cookie', guest.cookie)
       .expect(200);
-    expect(workflowHistory.body).toMatchObject({
-      assetType: 'workflow',
-      artifactId: workflow.body.id,
-      total: 1,
-    });
+    expect(workflowHistory.body).toEqual({ items: [], count: 0 });
     await request(app.getHttpServer())
       .get('/api/v1/demo/artifacts?organization=untrusted')
       .expect(400);
@@ -922,6 +918,71 @@ describe('US-RSE 2026 demonstration contract', () => {
       { assetType: 'artifact', includeValue: true },
       { assetType: 'workflow', includeValue: true },
     ]);
+  });
+
+  it('sanitizes owned workflow history while preserving owner access', async () => {
+    const owner = await createGuest();
+    const peer = await createGuest();
+    const artifact = await mutate(owner).artifact(artifactBody()).expect(201);
+    const workflow = await mutate(owner)
+      .workflow({
+        requestId: randomUUID(),
+        artifactIds: [artifact.body.id],
+        researchContext: 'REPRODUCIBLE_ANALYSIS',
+      })
+      .expect(201);
+    await dataSource.getRepository(WorkflowEntity).update(workflow.body.id, {
+      submissionState: SubmissionState.SUCCESS,
+      blockchainTxId: 'confirmed-workflow',
+    });
+    (ghwService.fetchHistory as jest.Mock).mockResolvedValue({
+      items: [
+        {
+          transactionId: 'workflow-tx',
+          committedAt: '2026-09-26T01:02:03Z',
+          deleted: false,
+          record: {
+            revision: 1,
+            sessionHash: 'private-session',
+            submitterEmail: 'private@example.org',
+            payload: {
+              title: 'Public workflow',
+              fingerprint: 'private-fingerprint',
+              manifest: [{ filename: 'original-secret.csv' }],
+            },
+          },
+        },
+      ],
+      count: 1,
+      internalSecret: 'must-not-escape',
+    });
+    const path = `/api/v1/demo/workflows/${workflow.body.id}/history`;
+    await request(app.getHttpServer())
+      .get(path)
+      .set('Cookie', peer.cookie)
+      .expect(403);
+    const owned = await request(app.getHttpServer())
+      .get(path)
+      .set('Cookie', owner.cookie)
+      .expect(200);
+    expect(owned.body).toEqual({
+      items: [
+        {
+          txId: 'workflow-tx',
+          timestamp: '2026-09-26T01:02:03Z',
+          isDelete: false,
+          revision: 1,
+        },
+      ],
+      count: 1,
+    });
+    expect(JSON.stringify(owned.body)).not.toMatch(
+      /record|session|email|filename|fingerprint|manifest|secret|payload/i,
+    );
+    const publicHistory = await request(app.getHttpServer())
+      .get(`/api/v1/demo/public/workflows/${workflow.body.id}/history`)
+      .expect(200);
+    expect(publicHistory.body).toEqual(owned.body);
   });
 
   it('keeps guarded detail and history exclusive to the contributing session', async () => {

@@ -107,6 +107,8 @@ Public catalog/detail/history reads work across both demo organizations during
 `OPEN` and `READ_ONLY`. Artifact history is sourced from Fabric and allowlists
 the public metadata snapshot from each revision; it never returns the raw
 ledger record, private actor fields, a manifest, or an original filename.
+Owned guest workflow history uses the same sanitized `{ items, count }` shape
+as public workflow history; pending workflows have an empty history response.
 There are intentionally no guest delete, administration, role-change,
 history-refresh, or internal-operation interfaces.
 

@@ -1,52 +1,12 @@
 import { NestFactory } from '@nestjs/core';
 import { AppModule } from './app.module';
 import { ValidationPipe, VersioningType } from '@nestjs/common';
-
-// Normalize origins to avoid subtle mismatches (trailing slashes, invisible chars, case)
-function normalizeOrigin(origin?: string): string {
-  if (!origin) return '';
-  const cleaned = origin
-    // remove zero-width and BOM characters that can sneak in from copy/paste
-    .replace(/[\u200B-\u200D\uFEFF]/g, '')
-    .trim()
-    .toLowerCase();
-  return cleaned.endsWith('/') ? cleaned.slice(0, -1) : cleaned;
-}
-
-const ALLOWED_ORIGINS = (process.env.CORS_ORIGINS || '')
-  .split(',')
-  .map(normalizeOrigin)
-  .filter(Boolean);
-
-const DEMO_ALLOWED_ORIGIN = normalizeOrigin(process.env.DEMO_ALLOWED_ORIGIN);
-if (DEMO_ALLOWED_ORIGIN && !ALLOWED_ORIGINS.includes(DEMO_ALLOWED_ORIGIN)) {
-  ALLOWED_ORIGINS.push(DEMO_ALLOWED_ORIGIN);
-}
+import { configureCors } from './cors-origin';
 
 async function bootstrap() {
   const app = await NestFactory.create(AppModule, { bufferLogs: true });
 
-  // Add Vary header to help caches handle per-origin responses
-  app.use((req, res, next) => {
-    res.setHeader('Vary', 'Origin');
-    next();
-  });
-
-  // Configure CORS using env-driven allowlist
-  app.enableCors({
-    origin: (origin, cb) => {
-      const normalized = normalizeOrigin(origin);
-      if (!origin || ALLOWED_ORIGINS.includes(normalized))
-        return cb(null, true);
-      return cb(new Error(`Origin ${origin} not allowed by CORS`), false);
-    },
-    methods: 'GET,HEAD,PUT,PATCH,POST,DELETE,OPTIONS',
-    allowedHeaders:
-      'Content-Type, Authorization, X-Requested-With, Accept, X-Demo-CSRF, X-Correlation-ID',
-    credentials: true,
-    optionsSuccessStatus: 204,
-    exposedHeaders: 'Content-Disposition',
-  });
+  configureCors(app);
 
   app.enableVersioning({
     type: VersioningType.URI,

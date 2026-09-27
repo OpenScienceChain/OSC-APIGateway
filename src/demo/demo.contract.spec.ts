@@ -20,12 +20,20 @@ import { OrganizationMembershipEntity } from '../organization/organization-membe
 import { OrganizationStatus } from '../organization/membership-status.enum';
 import { OrganizationEntity } from '../organization/organization.entity';
 import { RecordVisibility } from '../shared/enums/record-visibility.enum';
+import {
+  BusinessError,
+  BusinessLogicException,
+} from '../shared/errors/business-errors';
 import { UserEntity } from '../user/user.entity';
 import { WorkflowEntity } from '../workflow/workflow.entity';
 import { WorkflowService } from '../workflow/workflow.service';
 import { DemoController } from './demo.controller';
 import { DemoService } from './demo.service';
-import { DemoLifecycleState, DemoOrganizationSlug } from './demo.enums';
+import {
+  DemoContributionType,
+  DemoLifecycleState,
+  DemoOrganizationSlug,
+} from './demo.enums';
 import { DemoContributionEntity } from './entities/demo-contribution.entity';
 import { DemoArtifactEditEntity } from './entities/demo-artifact-edit.entity';
 import { DemoEventEntity } from './entities/demo-event.entity';
@@ -119,6 +127,17 @@ describe('US-RSE 2026 demonstration contract', () => {
               _correlationId: string,
               id: string,
             ) => {
+              if (
+                await artifacts.existsBy({
+                  title: dto.title,
+                  organization: { id: submitter.organizationId },
+                })
+              ) {
+                throw new BusinessLogicException(
+                  'An artifact with this title already exists in the organization',
+                  BusinessError.PRECONDITION_FAILED,
+                );
+              }
               artifactCreates += 1;
               const organization = await organizations.findOneByOrFail({
                 id: submitter.organizationId,
@@ -1454,6 +1473,32 @@ describe('US-RSE 2026 demonstration contract', () => {
       .findOneByOrFail({ id: created.body.id });
     expect(stored.manifest[0].filename).toMatch(/^demo-artifact-/);
     expect(JSON.stringify(stored)).not.toContain('secret.csv');
+  });
+
+  it('returns a controlled conflict when a failed artifact already owns the title', async () => {
+    const guest = await createGuest();
+    const body = artifactBody();
+    const first = await mutate(guest).artifact(body).expect(201);
+    await dataSource.getRepository(ArtifactEntity).update(first.body.id, {
+      submissionState: SubmissionState.FAILED,
+      submissionError: 'internal ledger failure details',
+    });
+    const duplicate = await mutate(guest)
+      .artifact({ ...body, requestId: randomUUID() })
+      .expect(409);
+    expect(duplicate.body.message).toBe(
+      'An artifact with this title already exists',
+    );
+    expect(JSON.stringify(duplicate.body)).not.toMatch(
+      /ledger|internal|query|stack|error details/i,
+    );
+    expect(artifactCreates).toBe(1);
+    expect(
+      await dataSource.getRepository(DemoContributionEntity).countBy({
+        recordType: DemoContributionType.ARTIFACT,
+      }),
+    ).toBe(1);
+    await mutate(guest).artifact(artifactBody()).expect(201);
   });
 
   it('limits owned edits, binds retries, and waits for each ledger confirmation', async () => {

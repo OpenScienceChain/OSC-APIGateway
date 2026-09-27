@@ -31,6 +31,7 @@ import { OrganizationEntity } from '../organization/organization.entity';
 import { OrganizationStatus } from '../organization/membership-status.enum';
 import { RecordVisibility } from '../shared/enums/record-visibility.enum';
 import { Role } from '../shared/enums/role.enums';
+import { BusinessError } from '../shared/errors/business-errors';
 import { WorkflowEntity } from '../workflow/workflow.entity';
 import { WorkflowService } from '../workflow/workflow.service';
 import {
@@ -1110,7 +1111,7 @@ export class DemoService {
     return `This public ${noun} was created during the bounded US-RSE 2026 interactive demonstration using the controlled ${context.toLowerCase().replace(/_/g, ' ')} context. It contains no uploaded file content, original filename, personal name, or attendee email address.`;
   }
 
-  private persistArtifact(
+  private async persistArtifact(
     recordId: string,
     principal: DemoPrincipal,
     dto: CreateDemoArtifactDto,
@@ -1118,34 +1119,51 @@ export class DemoService {
   ) {
     const manifestName = `demo-artifact-${recordId}.${dto.extension}`;
     const payload = this.createArtifactPayload(dto);
-    return this.artifactService.create(
-      {
-        title: payload.title,
-        description: payload.description,
-        visibility: RecordVisibility.PUBLIC,
-        keywords: [
-          'usrse26-demo',
-          dto.researchContext.toLowerCase(),
-          ...payload.keywords,
-        ],
-        links: payload.links,
-        dois: payload.dois,
-        fundingAgencies: payload.fundingAgencies,
-        acknowledgements: payload.acknowledgements,
-        manifest: [
-          {
-            hash: dto.fingerprint,
-            filename: manifestName,
-            algorithm: 'sha256',
-          },
-        ],
-        footprint: dto.fingerprint,
-        submission_comment: payload.submissionComment,
-      },
-      this.submitter(principal),
-      correlationId || dto.requestId,
-      recordId,
-    );
+    try {
+      return await this.artifactService.create(
+        {
+          title: payload.title,
+          description: payload.description,
+          visibility: RecordVisibility.PUBLIC,
+          keywords: [
+            'usrse26-demo',
+            dto.researchContext.toLowerCase(),
+            ...payload.keywords,
+          ],
+          links: payload.links,
+          dois: payload.dois,
+          fundingAgencies: payload.fundingAgencies,
+          acknowledgements: payload.acknowledgements,
+          manifest: [
+            {
+              hash: dto.fingerprint,
+              filename: manifestName,
+              algorithm: 'sha256',
+            },
+          ],
+          footprint: dto.fingerprint,
+          submission_comment: payload.submissionComment,
+        },
+        this.submitter(principal),
+        correlationId || dto.requestId,
+        recordId,
+      );
+    } catch (error) {
+      if (
+        error &&
+        typeof error === 'object' &&
+        'type' in error &&
+        error.type === BusinessError.PRECONDITION_FAILED &&
+        'message' in error &&
+        error.message ===
+          'An artifact with this title already exists in the organization'
+      ) {
+        throw new ConflictException(
+          'An artifact with this title already exists',
+        );
+      }
+      throw error;
+    }
   }
 
   private persistWorkflow(

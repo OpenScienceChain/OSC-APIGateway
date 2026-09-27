@@ -1174,6 +1174,39 @@ export class DemoService {
     );
   }
 
+  private async assertConfirmedWorkflowArtifacts(
+    principal: DemoPrincipal,
+    artifactIds: string[],
+    runtime: DemoRuntimeEntity,
+  ) {
+    for (const artifactId of artifactIds) {
+      let artifact: ArtifactEntity;
+      try {
+        const eligible = await this.demoRecord(
+          DemoContributionType.ARTIFACT,
+          artifactId,
+          true,
+          principal,
+          runtime,
+        );
+        artifact = eligible.record as ArtifactEntity;
+      } catch (error) {
+        if (!(error instanceof NotFoundException)) throw error;
+        throw new ForbiddenException(
+          'Workflows may link only eligible artifacts from this demonstration session',
+        );
+      }
+      if (
+        artifact.submissionState !== SubmissionState.SUCCESS ||
+        !artifact.blockchainTxId?.trim()
+      ) {
+        throw new ForbiddenException(
+          'Workflows may link only confirmed artifacts',
+        );
+      }
+    }
+  }
+
   async createArtifact(
     principal: DemoPrincipal,
     dto: CreateDemoArtifactDto,
@@ -1397,6 +1430,41 @@ export class DemoService {
       }
     }
 
+    if (!existing) {
+      const sameList = (proposed: string[], current: string[]) =>
+        JSON.stringify([...proposed].sort()) ===
+        JSON.stringify([...current].sort());
+      const currentKeywords = (artifact.keywords || []).filter(
+        (keyword) =>
+          keyword !== 'usrse26-demo' &&
+          keyword !== contribution.researchContext?.toLowerCase(),
+      );
+      const currentExtension = artifact.manifest?.[0]?.filename
+        ?.split('.')
+        .pop();
+      const changed =
+        (payload.keywords !== undefined &&
+          !sameList(payload.keywords, currentKeywords)) ||
+        (payload.links !== undefined &&
+          !sameList(payload.links, artifact.links || [])) ||
+        (payload.dois !== undefined &&
+          !sameList(payload.dois, artifact.dois || [])) ||
+        (payload.fundingAgencies !== undefined &&
+          !sameList(payload.fundingAgencies, artifact.fundingAgencies || [])) ||
+        (payload.acknowledgements !== undefined &&
+          payload.acknowledgements !==
+            (artifact.acknowledgements || '').trim()) ||
+        (payload.fingerprint !== undefined &&
+          (payload.fingerprint !== artifact.footprint ||
+            payload.extension !== currentExtension));
+      // A size claim alone cannot change content when its SHA-256 is unchanged.
+      if (!changed) {
+        throw new BadRequestException(
+          'At least one editable artifact field must change',
+        );
+      }
+    }
+
     const latest = await this.artifactEdits.findOne({
       where: { recordId },
       order: { editNumber: 'DESC' },
@@ -1544,6 +1612,11 @@ export class DemoService {
         );
       }
       if (!(await this.workflows.existsBy({ id: existing.recordId }))) {
+        await this.assertConfirmedWorkflowArtifacts(
+          principal,
+          dto.artifactIds,
+          currentRuntime,
+        );
         await this.persistWorkflow(
           existing.recordId,
           principal,
@@ -1560,27 +1633,11 @@ export class DemoService {
     }
 
     const runtime = await this.ensureRuntime();
-    for (const artifactId of dto.artifactIds) {
-      let artifact: ArtifactEntity;
-      try {
-        const eligible = await this.demoRecord(
-          DemoContributionType.ARTIFACT,
-          artifactId,
-          true,
-          principal,
-          runtime,
-        );
-        artifact = eligible.record as ArtifactEntity;
-      } catch (error) {
-        if (!(error instanceof NotFoundException)) throw error;
-        throw new ForbiddenException(
-          'Workflows may link only eligible artifacts from this demonstration session',
-        );
-      }
-      if (artifact.submissionState === SubmissionState.FAILED) {
-        throw new ForbiddenException('Workflows may not link failed artifacts');
-      }
-    }
+    await this.assertConfirmedWorkflowArtifacts(
+      principal,
+      dto.artifactIds,
+      runtime,
+    );
 
     const outcome = await this.reserve(
       principal,

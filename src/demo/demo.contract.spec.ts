@@ -352,6 +352,13 @@ describe('US-RSE 2026 demonstration contract', () => {
     acknowledgements: 'Conference demonstration.',
   });
 
+  async function confirmArtifact(id: string) {
+    await dataSource.getRepository(ArtifactEntity).update(id, {
+      submissionState: SubmissionState.SUCCESS,
+      blockchainTxId: `confirmed-${id}`,
+    });
+  }
+
   it('uses an exact-origin, cookie-only, CSRF-protected guest boundary', async () => {
     await request(app.getHttpServer())
       .post('/api/v1/demo/session')
@@ -455,6 +462,7 @@ describe('US-RSE 2026 demonstration contract', () => {
         researchContext: 'REPRODUCIBLE_ANALYSIS',
       })
       .expect(403);
+    await confirmArtifact(first.body.id);
     const workflow = await mutate(guest)
       .workflow({
         requestId: randomUUID(),
@@ -639,6 +647,7 @@ describe('US-RSE 2026 demonstration contract', () => {
   it('does not retain record identifiers in analytics while preserving aggregate counters', async () => {
     const guest = await createGuest();
     const artifact = await mutate(guest).artifact(artifactBody()).expect(201);
+    await confirmArtifact(artifact.body.id);
     const workflow = await mutate(guest)
       .workflow({
         requestId: randomUUID(),
@@ -683,6 +692,7 @@ describe('US-RSE 2026 demonstration contract', () => {
     const sameOrg = await createGuest();
     const otherOrg = await createGuest(DemoOrganizationSlug.CITIZEN_SCIENCE);
     const artifact = await mutate(owner).artifact(artifactBody()).expect(201);
+    await confirmArtifact(artifact.body.id);
     const workflow = await mutate(owner)
       .workflow({
         requestId: randomUUID(),
@@ -752,6 +762,7 @@ describe('US-RSE 2026 demonstration contract', () => {
               'fundingAgencies',
               'acknowledgements',
               'submissionComment',
+              'blockchainTxId',
             ]
           : [
               'id',
@@ -770,15 +781,16 @@ describe('US-RSE 2026 demonstration contract', () => {
       expect(Object.keys(detail.body).join(',')).not.toMatch(
         /fingerprint|manifest|filename|email|session|footprint|submissionError/i,
       );
-      expect(
-        (
-          await request(app.getHttpServer())
-            .get(`${base}/public/${type}/${id}/history`)
-            .expect(200)
-        ).body,
-      ).toEqual({ items: [], count: 0 });
+      const pendingHistory = await request(app.getHttpServer())
+        .get(`${base}/public/${type}/${id}/history`)
+        .expect(200);
+      expect(pendingHistory.body).toEqual(
+        type === 'artifacts'
+          ? { items: [{ txId: 'workflow-history-transaction' }], count: 1 }
+          : { items: [], count: 0 },
+      );
     }
-    expect(ghwService.fetchHistory).not.toHaveBeenCalled();
+    expect(ghwService.fetchHistory).toHaveBeenCalledTimes(1);
 
     await dataSource.getRepository(ArtifactEntity).update(artifact.body.id, {
       submissionState: SubmissionState.SUCCESS,
@@ -842,6 +854,7 @@ describe('US-RSE 2026 demonstration contract', () => {
   it('sanitizes current worker history aliases without returning raw records', async () => {
     const guest = await createGuest();
     const artifact = await mutate(guest).artifact(artifactBody()).expect(201);
+    await confirmArtifact(artifact.body.id);
     const workflow = await mutate(guest)
       .workflow({
         requestId: randomUUID(),
@@ -924,6 +937,7 @@ describe('US-RSE 2026 demonstration contract', () => {
     const owner = await createGuest();
     const peer = await createGuest();
     const artifact = await mutate(owner).artifact(artifactBody()).expect(201);
+    await confirmArtifact(artifact.body.id);
     const workflow = await mutate(owner)
       .workflow({
         requestId: randomUUID(),
@@ -989,6 +1003,7 @@ describe('US-RSE 2026 demonstration contract', () => {
     const owner = await createGuest();
     const peer = await createGuest();
     const artifact = await mutate(owner).artifact(artifactBody()).expect(201);
+    await confirmArtifact(artifact.body.id);
     const workflow = await mutate(owner)
       .workflow({
         requestId: randomUUID(),
@@ -1016,7 +1031,10 @@ describe('US-RSE 2026 demonstration contract', () => {
         .expect(200);
       expect(owned.body).toMatchObject({
         id,
-        submissionState: SubmissionState.PENDING,
+        submissionState:
+          type === 'artifacts'
+            ? SubmissionState.SUCCESS
+            : SubmissionState.PENDING,
       });
       await request(app.getHttpServer())
         .get(`${base}/${type}/${id}/history`)
@@ -1051,6 +1069,7 @@ describe('US-RSE 2026 demonstration contract', () => {
   it('limits public lists and session reads to current-run demo contributions', async () => {
     const guest = await createGuest();
     const artifact = await mutate(guest).artifact(artifactBody()).expect(201);
+    await confirmArtifact(artifact.body.id);
     const workflow = await mutate(guest)
       .workflow({
         requestId: randomUUID(),
@@ -1178,6 +1197,13 @@ describe('US-RSE 2026 demonstration contract', () => {
       researchContext: 'REPRODUCIBLE_ANALYSIS',
     };
     await mutate(peer).workflow(body).expect(403);
+    await mutate(owner).workflow(body).expect(403);
+    await dataSource.getRepository(ArtifactEntity).update(artifact.body.id, {
+      submissionState: SubmissionState.SUCCESS,
+      blockchainTxId: null,
+    });
+    await mutate(owner).workflow(body).expect(403);
+    await confirmArtifact(artifact.body.id);
     await mutate(owner).workflow(body).expect(201);
     await dataSource.getRepository(ArtifactEntity).update(artifact.body.id, {
       submissionState: SubmissionState.FAILED,
@@ -1213,6 +1239,7 @@ describe('US-RSE 2026 demonstration contract', () => {
     const owner = await createGuest();
     const peer = await createGuest();
     const artifact = await mutate(owner).artifact(artifactBody()).expect(201);
+    await confirmArtifact(artifact.body.id);
     const body = {
       requestId: randomUUID(),
       artifactIds: [artifact.body.id],
@@ -1235,6 +1262,12 @@ describe('US-RSE 2026 demonstration contract', () => {
     await mutate(peer).workflow(body).expect(403);
 
     await dataSource.getRepository(WorkflowEntity).delete(first.body.id);
+    await mutate(owner).workflow(body).expect(403);
+    await dataSource.getRepository(ArtifactEntity).update(artifact.body.id, {
+      submissionState: SubmissionState.SUCCESS,
+      blockchainTxId: 'confirmed-recovery',
+      archivedAt: null,
+    });
     const recovered = await mutate(owner).workflow(body).expect(201);
     expect(recovered.body.id).toBe(first.body.id);
     expect(
@@ -1251,6 +1284,7 @@ describe('US-RSE 2026 demonstration contract', () => {
   it('fails closed for spoofed, private, non-demo, deleted, expired and stale public reads', async () => {
     const guest = await createGuest();
     const artifact = await mutate(guest).artifact(artifactBody()).expect(201);
+    await confirmArtifact(artifact.body.id);
     const workflow = await mutate(guest)
       .workflow({
         requestId: randomUUID(),
@@ -1485,6 +1519,54 @@ describe('US-RSE 2026 demonstration contract', () => {
       runId: 'contract-test',
     });
     await mutate(owner).updateArtifact(id, first).expect(503);
+  });
+
+  it('rejects normalized no-op edits without reserving a revision slot', async () => {
+    const owner = await createGuest();
+    const create = artifactBody();
+    const created = await mutate(owner).artifact(create).expect(201);
+    await confirmArtifact(created.body.id);
+    const id = created.body.id;
+    await mutate(owner)
+      .updateArtifact(id, {
+        requestId: randomUUID(),
+        submissionComment:
+          'A different comment does not make unchanged metadata an edit.',
+        keywords: [' provenance ', 'microscopy'],
+        links: [],
+        acknowledgements: ' Conference demonstration. ',
+      })
+      .expect(400);
+    await mutate(owner)
+      .updateArtifact(id, {
+        requestId: randomUUID(),
+        submissionComment:
+          'A matching replacement fingerprint must not consume a slot.',
+        fingerprint: create.fingerprint,
+        sizeBytes: create.sizeBytes,
+        extension: create.extension,
+      })
+      .expect(400);
+    expect(
+      await dataSource.getRepository(DemoArtifactEditEntity).countBy({
+        recordId: id,
+      }),
+    ).toBe(0);
+    expect(artifactUpdates).toBe(0);
+    await mutate(owner)
+      .updateArtifact(id, {
+        requestId: randomUUID(),
+        submissionComment:
+          'A genuinely new keyword creates the first revision.',
+        keywords: ['microscopy', 'provenance', 'new-keyword'],
+      })
+      .expect(200);
+    expect(
+      await dataSource.getRepository(DemoArtifactEditEntity).countBy({
+        recordId: id,
+      }),
+    ).toBe(1);
+    expect(artifactUpdates).toBe(1);
   });
 
   it('returns only each ledger revision’s safe snapshot fields', async () => {

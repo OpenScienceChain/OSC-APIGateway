@@ -68,15 +68,17 @@ manifest name of the form `demo-artifact-<record UUID>.<extension>`.
 `PATCH /api/v1/demo/artifacts/:id` allows the contributing guest session to
 make at most two edits to a confirmed public artifact while the same run is
 `OPEN`. It requires a new request ID, submission comment, and at least one
-editable field: keywords, links, DOIs, funding agencies, acknowledgements, or
+genuinely changed editable field: keywords, links, DOIs, funding agencies, acknowledgements, or
 a replacement fingerprint/size/extension triple. Title and description stay
-immutable. A new edit waits for the preceding ledger revision to confirm;
+immutable. A same-value patch is rejected before reserving an edit slot. A new edit waits for the preceding ledger revision to confirm;
 same-payload retries do not create another revision. The owner receives the
 same sanitized version-specific history as the public route.
 
 `POST /api/v1/demo/workflows` accepts a request ID, one to three distinct
 artifact UUIDs, and one controlled research context. Every linked artifact
-must belong to the session-bound organization.
+must belong to the session-bound organization and have a confirmed Fabric
+transaction. Pending, failed, or unconfirmed artifact links are rejected,
+including when resuming an interrupted workflow write.
 
 Request IDs are idempotency keys within a session. A same-payload retry returns
 the original record UUID and does not reserve another quota slot. Reusing a

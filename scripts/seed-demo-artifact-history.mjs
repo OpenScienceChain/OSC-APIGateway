@@ -97,6 +97,16 @@ const refreshIfNeeded = async (session) => {
   session.csrfToken = result.csrfToken;
   session.expiresAt = Date.parse(result.expiresAt);
 };
+const confirmedRevisionCount = (history) => {
+  if (!Array.isArray(history.items)) return 0;
+  const revisions = new Set(history.items.filter((item) =>
+    Number.isInteger(item.revision) && item.txId &&
+    item.snapshot?.title && item.snapshot?.submissionComment,
+  ).map((item) => item.revision));
+  let count = 0;
+  while (revisions.has(count + 1)) count += 1;
+  return count;
+};
 const waitForRevision = async (id, minimum, previousTxId) => {
   const until = Date.now() + 8 * 60_000;
   while (Date.now() < until) {
@@ -105,8 +115,7 @@ const waitForRevision = async (id, minimum, previousTxId) => {
     if (detail.submissionState === 'SUCCESS' && detail.blockchainTxId &&
         detail.blockchainTxId !== previousTxId) {
       const history = (await readJson(`public/artifacts/${id}/history`)).result;
-      if (Array.isArray(history.items) && history.items.length >= minimum &&
-          history.items.some((item) => item.snapshot?.submissionComment)) {
+      if (confirmedRevisionCount(history) >= minimum) {
         return detail.blockchainTxId;
       }
     }
@@ -126,7 +135,7 @@ for (const example of examples) {
   const prefix = example.organization === 'neuroscience-gateway' ? 'NEUROSCIENCE' : 'CITIZEN_SCIENCE';
   if (matching.length && !process.env[`DEMO_SEED_${prefix}_COOKIE`]) {
     const history = (await readJson(`public/artifacts/${matching[0].id}/history`)).result;
-    if (history.items?.length >= 3) {
+    if (confirmedRevisionCount(history) >= 3) {
       process.stdout.write(`${example.organization}: already complete (${matching[0].id})\n`);
       continue;
     }
@@ -149,7 +158,7 @@ for (const example of examples) {
     id = created.id;
   }
   let history = (await readJson(`public/artifacts/${id}/history`)).result;
-  let count = Array.isArray(history.items) ? history.items.length : 0;
+  let count = confirmedRevisionCount(history);
   let txId = null;
   if (count < 1) txId = await waitForRevision(id, 1, null);
   else txId = (await readJson(`public/artifacts/${id}`)).result.blockchainTxId;
@@ -162,7 +171,7 @@ for (const example of examples) {
     }, session);
     txId = await waitForRevision(id, editNumber + 1, txId);
     history = (await readJson(`public/artifacts/${id}/history`)).result;
-    count = history.items.length;
+    count = confirmedRevisionCount(history);
   }
   process.stdout.write(`${example.organization}: ${id}, ${count} confirmed ledger revisions\n`);
 }

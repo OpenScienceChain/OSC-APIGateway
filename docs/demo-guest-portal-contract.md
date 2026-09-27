@@ -1,0 +1,23 @@
+# Guest portal restoration contract
+
+Baseline: Gateway `56d7f5de662b5fff6f0cf32e136ae2ac320c7910`. This is an additive `/api/v1/demo` contract. Existing authenticated artifact routes and the current cookie, CSRF, origin, organization, quota, and `READ_ONLY` controls remain authoritative.
+
+## Create
+
+`POST /api/v1/demo/artifacts` keeps a client UUIDv4 `requestId`, lowercase SHA-256 `fingerprint`, byte count (1–10 MiB), allowlisted extension, and controlled `researchContext`. It additionally accepts the old form's `title` (3–200 characters), `description` (50–3000), `submissionComment` (20–1000), and bounded optional `keywords`, `links`, `dois`, `fundingAgencies`, and `acknowledgements`. Free text is accepted directly without moderation. The server trims and validates it, rejects extra properties, and always sets public visibility, the session-bound organization, a generated contributor alias/email, and a generated manifest name. File bytes and original filenames never enter a request. The same session and request ID with the same canonical payload returns the same contribution; changed payload returns conflict.
+
+## Owned edits
+
+`PATCH /api/v1/demo/artifacts/:id` uses the same guest cookie, exact Origin, and CSRF header as create. It requires a fresh UUIDv4 `requestId`, `submissionComment` (20–1000), and at least one changed editable field. Allowed fields are `keywords`, `links`, `dois`, `fundingAgencies`, `acknowledgements`, or an optional replacement fingerprint/size/extension triple, whose manifest name is regenerated on the server. `title` and `description` are immutable. The Gateway verifies the artifact's current-run contribution belongs to the same session and organization, that the artifact is public and confirmed, and that the run is `OPEN`. A guest may submit at most two edits per artifact during the same renewable session (never past run close). An edit does not consume a new artifact creation slot. An edit request ID and canonical payload are persisted so a retry cannot create a second revision; a changed retry conflicts. If the previous edit is still awaiting ledger confirmation, further edits wait/fail closed rather than overwrite it.
+
+## Public reads and history
+
+Public catalog, detail, and history remain readable across both demo organizations during `OPEN` and `READ_ONLY`; protected product routes stay unchanged. Detail may show current safe form fields. History comes from the exact organization's Fabric-backed history for the requested current-run public record. Each response item contains only validated transaction ID, timestamp, deletion flag, and version-specific allowlisted public artifact fields: title, description, controlled research context, keywords, links, DOIs, funding agencies, acknowledgements, and submission comment. Fields absent or malformed in that particular ledger revision are omitted, never filled from the current database row. No raw history object, session token/hash, email, internal actor ID, private data, file bytes, original filename, manifest, or unreviewed custom field is returned. The server enforces a bounded item count and drops malformed items.
+
+## Per-run example seed
+
+The seed procedure runs once per exact `runId` after the runtime is `OPEN`, through the same Gateway create/edit endpoints and hence the existing Gateway → outbox → Fabric route. It creates two or three clearly labeled example artifacts with two confirmed edits each, waiting for confirmation and reading the public history after every revision. It uses a private script-held guest cookie and CSRF value that expire within 30 minutes and no later than run close. Seed request IDs and example labels are deterministic for a run; the procedure checks already-created current-run records and resumes only missing steps. It never accepts file bytes or original filenames. The seed session and all analytics retain the existing 30-day purge rule. The seed never bypasses `READ_ONLY` or contribution quotas.
+
+## Verification
+
+Focused contract coverage: valid rich create; changed-payload idempotency conflict; cross-session and cross-organization edit denial; expiry, CSRF, origin, `READ_ONLY`, two-edit ceiling, pending-ledger and retry behavior; unexpected-property rejection; public cross-organization reads; each history revision showing its own sanitized text with malicious ledger fields absent. Full Gateway suite and build follow the focused checks. Seed procedure must be local and dry-run/checkable without AWS.

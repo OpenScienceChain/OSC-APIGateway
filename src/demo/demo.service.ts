@@ -23,6 +23,7 @@ import {
 import { Between, DataSource, In, IsNull, LessThan, Repository } from 'typeorm';
 import { ArtifactEntity } from '../artifact/artifact.entity';
 import { ArtifactService } from '../artifact/artifact.service';
+import { UpdateArtifactUserDto } from '../artifact/dto/update-artifact-user.dto';
 import { SubmissionState } from '../artifact/enums/submission-state.enum';
 import { GhwService } from '../artifact/ghw.service';
 import { OutboxEntity, OutboxStatus } from '../messaging/outbox.entity';
@@ -59,6 +60,7 @@ import {
   DemoResearchContext,
 } from './demo.enums';
 import { DemoContributionEntity } from './entities/demo-contribution.entity';
+import { DemoArtifactEditEntity } from './entities/demo-artifact-edit.entity';
 import { DemoEventEntity } from './entities/demo-event.entity';
 import { DemoFeedbackEntity } from './entities/demo-feedback.entity';
 import { DemoRuntimeEntity } from './entities/demo-runtime.entity';
@@ -68,6 +70,8 @@ import {
   DemoSessionResult,
   DemoTokenPayload,
 } from './demo.types';
+import { UpdateDemoArtifactDto } from './dto/update-demo-artifact.dto';
+import { DEMO_MAX_FILE_BYTES } from './demo.constants';
 
 type ReservationOutcome = 'reserved' | 'session-limit' | 'global-limit';
 
@@ -92,6 +96,8 @@ export class DemoService {
     private readonly feedback: Repository<DemoFeedbackEntity>,
     @InjectRepository(DemoContributionEntity)
     private readonly contributions: Repository<DemoContributionEntity>,
+    @InjectRepository(DemoArtifactEditEntity)
+    private readonly artifactEdits: Repository<DemoArtifactEditEntity>,
     @InjectRepository(OrganizationEntity)
     private readonly organizations: Repository<OrganizationEntity>,
     @InjectRepository(ArtifactEntity)
@@ -127,6 +133,69 @@ export class DemoService {
 
   private csrfHash(token: string): string {
     return createHash('sha256').update(token).digest('hex');
+  }
+
+  private artifactPayloadHash(payload: unknown): string {
+    return createHash('sha256').update(JSON.stringify(payload)).digest('hex');
+  }
+
+  private normalizeArtifactText(value: string, name: string): string {
+    const trimmed = value.trim();
+    if (!trimmed) throw new BadRequestException(`${name} cannot be empty`);
+    return trimmed;
+  }
+
+  private normalizeArtifactList(values: string[] | undefined): string[] {
+    const normalized = (values || []).map((value) => value.trim());
+    if (normalized.some((value) => !value)) {
+      throw new BadRequestException('Artifact list values cannot be empty');
+    }
+    return normalized;
+  }
+
+  private validateArtifactLists(keywords: string[], links: string[]) {
+    // The product validator counts the two server-owned marker keywords too.
+    if (keywords.join('').length > 960 || links.join('').length > 2000) {
+      throw new BadRequestException('Artifact lists exceed the product limits');
+    }
+  }
+
+  private createArtifactPayload(dto: CreateDemoArtifactDto) {
+    const title = this.normalizeArtifactText(dto.title, 'Title');
+    const description = this.normalizeArtifactText(
+      dto.description,
+      'Description',
+    );
+    const submissionComment = this.normalizeArtifactText(
+      dto.submissionComment,
+      'Submission comment',
+    );
+    if (
+      title.length < 3 ||
+      description.length < 50 ||
+      submissionComment.length < 20
+    ) {
+      throw new BadRequestException(
+        'Artifact text is shorter than the public form minimum',
+      );
+    }
+    const keywords = this.normalizeArtifactList(dto.keywords);
+    const links = this.normalizeArtifactList(dto.links);
+    this.validateArtifactLists(keywords, links);
+    return {
+      fingerprint: dto.fingerprint,
+      sizeBytes: dto.sizeBytes,
+      extension: dto.extension,
+      researchContext: dto.researchContext,
+      title,
+      description,
+      submissionComment,
+      keywords,
+      links,
+      dois: this.normalizeArtifactList(dto.dois),
+      fundingAgencies: this.normalizeArtifactList(dto.fundingAgencies),
+      acknowledgements: (dto.acknowledgements || '').trim(),
+    };
   }
 
   private safeEquals(left: string, right: string): boolean {
@@ -202,6 +271,7 @@ export class DemoService {
     };
     return {
       state,
+      runId: runtime.runId,
       message: messages[state],
       opensAt: runtime.opensAt,
       closesAt: runtime.closesAt,
@@ -454,7 +524,21 @@ export class DemoService {
         : {}),
     };
     if (contribution.recordType === DemoContributionType.ARTIFACT) {
-      return { ...common, verified: (record as ArtifactEntity).verified };
+      const artifact = record as ArtifactEntity;
+      return {
+        ...common,
+        verified: artifact.verified,
+        keywords: artifact.keywords.filter(
+          (keyword) =>
+            keyword !== 'usrse26-demo' &&
+            keyword !== contribution.researchContext?.toLowerCase(),
+        ),
+        links: artifact.links,
+        dois: artifact.dois,
+        fundingAgencies: artifact.fundingAgencies,
+        acknowledgements: artifact.acknowledgements,
+        submissionComment: artifact.submission_comment,
+      };
     }
     const linkedIds = (record as WorkflowEntity).artifacts.map(
       (artifact) => artifact.id,
@@ -542,7 +626,7 @@ export class DemoService {
     correlationId?: string,
   ) {
     const runtime = await this.publicReadWindow();
-    const { record, organization } = await this.demoRecord(
+    const { record, organization, contribution } = await this.demoRecord(
       recordType,
       recordId,
       true,
@@ -589,10 +673,88 @@ export class DemoService {
             typeof source.isDelete === 'boolean'
               ? source.isDelete
               : source.deleted;
+          const rawRecord = source.record || source.value;
+          const ledgerRecord =
+            rawRecord &&
+            typeof rawRecord === 'object' &&
+            !Array.isArray(rawRecord)
+              ? (rawRecord as Record<string, unknown>)
+              : null;
+          const rawPayload = ledgerRecord?.payload;
+          const ledgerPayload =
+            rawPayload &&
+            typeof rawPayload === 'object' &&
+            !Array.isArray(rawPayload)
+              ? (rawPayload as Record<string, unknown>)
+              : null;
+          const safeText = (name: string, max: number): string | undefined => {
+            const value = ledgerPayload?.[name];
+            return typeof value === 'string' && value.length <= max
+              ? value
+              : undefined;
+          };
+          const safeList = (
+            name: string,
+            maxItems: number,
+            maxItemLength: number,
+          ): string[] | undefined => {
+            const value = ledgerPayload?.[name];
+            return Array.isArray(value) &&
+              value.length <= maxItems &&
+              value.every(
+                (part) =>
+                  typeof part === 'string' && part.length <= maxItemLength,
+              )
+              ? value
+              : undefined;
+          };
+          const revision = ledgerRecord?.revision;
+          const snapshot =
+            recordType === DemoContributionType.ARTIFACT
+              ? {
+                  ...(safeText('title', 200) !== undefined
+                    ? { title: safeText('title', 200) }
+                    : {}),
+                  ...(safeText('description', 3000) !== undefined
+                    ? { description: safeText('description', 3000) }
+                    : {}),
+                  ...(safeText('submission_comment', 1000) !== undefined
+                    ? {
+                        submissionComment: safeText('submission_comment', 1000),
+                      }
+                    : {}),
+                  ...(safeList('keywords', 12, 100) !== undefined
+                    ? {
+                        keywords: safeList('keywords', 12, 100)?.filter(
+                          (keyword) =>
+                            keyword !== 'usrse26-demo' &&
+                            keyword !==
+                              contribution.researchContext?.toLowerCase(),
+                        ),
+                      }
+                    : {}),
+                  ...(safeList('links', 5, 400) !== undefined
+                    ? { links: safeList('links', 5, 400) }
+                    : {}),
+                  ...(safeList('dois', 5, 100) !== undefined
+                    ? { dois: safeList('dois', 5, 100) }
+                    : {}),
+                  ...(safeList('fundingAgencies', 5, 100) !== undefined
+                    ? { fundingAgencies: safeList('fundingAgencies', 5, 100) }
+                    : {}),
+                  ...(safeText('acknowledgements', 1000) !== undefined
+                    ? { acknowledgements: safeText('acknowledgements', 1000) }
+                    : {}),
+                }
+              : {};
           const sanitized = {
             ...(validString(txId) ? { txId } : {}),
             ...(validString(timestamp) ? { timestamp } : {}),
             ...(typeof isDelete === 'boolean' ? { isDelete } : {}),
+            ...(Number.isInteger(revision) && Number(revision) > 0
+              ? { revision }
+              : {}),
+            ...(Object.keys(snapshot).length ? { snapshot } : {}),
           };
           return Object.keys(sanitized).length ? sanitized : null;
         })
@@ -955,20 +1117,21 @@ export class DemoService {
     correlationId?: string,
   ) {
     const manifestName = `demo-artifact-${recordId}.${dto.extension}`;
+    const payload = this.createArtifactPayload(dto);
     return this.artifactService.create(
       {
-        title: `Demo artifact ${principal.contributorAlias} ${recordId.slice(0, 8)}`,
-        description: this.controlledDescription(
-          dto.researchContext,
-          'artifact',
-        ),
+        title: payload.title,
+        description: payload.description,
         visibility: RecordVisibility.PUBLIC,
-        keywords: ['usrse26-demo', dto.researchContext.toLowerCase()],
-        links: [],
-        dois: [],
-        fundingAgencies: [],
-        acknowledgements:
-          'Generated through the OSC US-RSE 2026 interactive demonstration.',
+        keywords: [
+          'usrse26-demo',
+          dto.researchContext.toLowerCase(),
+          ...payload.keywords,
+        ],
+        links: payload.links,
+        dois: payload.dois,
+        fundingAgencies: payload.fundingAgencies,
+        acknowledgements: payload.acknowledgements,
         manifest: [
           {
             hash: dto.fingerprint,
@@ -977,8 +1140,7 @@ export class DemoService {
           },
         ],
         footprint: dto.fingerprint,
-        submission_comment:
-          'Created through the bounded US-RSE 2026 interactive demonstration.',
+        submission_comment: payload.submissionComment,
       },
       this.submitter(principal),
       correlationId || dto.requestId,
@@ -1017,6 +1179,8 @@ export class DemoService {
     dto: CreateDemoArtifactDto,
     correlationId?: string,
   ) {
+    const payload = this.createArtifactPayload(dto);
+    const payloadHash = this.artifactPayloadHash(payload);
     if (!DEMO_FILE_EXTENSIONS.has(dto.extension)) {
       throw new BadRequestException(
         'The selected file extension is not allowed',
@@ -1032,12 +1196,7 @@ export class DemoService {
           'The request identifier was already used for another contribution type',
         );
       }
-      if (
-        existing.fingerprint !== dto.fingerprint ||
-        existing.sizeBytes !== dto.sizeBytes ||
-        existing.extension !== dto.extension ||
-        existing.researchContext !== dto.researchContext
-      ) {
+      if (existing.createPayloadHash !== payloadHash) {
         throw new ConflictException(
           'The request identifier was already used with a different artifact payload',
         );
@@ -1075,6 +1234,7 @@ export class DemoService {
       extension: dto.extension,
       fingerprint: dto.fingerprint,
       researchContext: dto.researchContext,
+      createPayloadHash: payloadHash,
       artifactIds: null,
       acceptedAt: now,
       retentionExpiresAt: this.plusDays(now),
@@ -1106,6 +1266,238 @@ export class DemoService {
       DemoEventName.ARTIFACT_ACCEPTED,
       'artifact',
     );
+    return this.artifactResponse(recordId, principal);
+  }
+
+  private updateArtifactPayload(dto: UpdateDemoArtifactDto) {
+    const replacement = [dto.fingerprint, dto.sizeBytes, dto.extension];
+    if (
+      replacement.some((value) => value !== undefined) &&
+      replacement.some((value) => value === undefined)
+    ) {
+      throw new BadRequestException(
+        'A replacement file requires fingerprint, size, and extension',
+      );
+    }
+    if (dto.extension && !DEMO_FILE_EXTENSIONS.has(dto.extension)) {
+      throw new BadRequestException(
+        'The selected file extension is not allowed',
+      );
+    }
+    if (dto.sizeBytes && dto.sizeBytes > DEMO_MAX_FILE_BYTES) {
+      throw new BadRequestException('The selected file exceeds the demo limit');
+    }
+    if (
+      ![
+        dto.keywords,
+        dto.links,
+        dto.dois,
+        dto.fundingAgencies,
+        dto.acknowledgements,
+        dto.fingerprint,
+      ].some((value) => value !== undefined)
+    ) {
+      throw new BadRequestException('At least one editable field is required');
+    }
+    const submissionComment = this.normalizeArtifactText(
+      dto.submissionComment,
+      'Submission comment',
+    );
+    if (submissionComment.length < 20) {
+      throw new BadRequestException('Submission comment is too short');
+    }
+    const keywords =
+      dto.keywords === undefined
+        ? undefined
+        : this.normalizeArtifactList(dto.keywords);
+    const links =
+      dto.links === undefined
+        ? undefined
+        : this.normalizeArtifactList(dto.links);
+    this.validateArtifactLists(keywords || [], links || []);
+    return {
+      submissionComment,
+      ...(keywords !== undefined ? { keywords } : {}),
+      ...(links !== undefined ? { links } : {}),
+      ...(dto.dois !== undefined
+        ? { dois: this.normalizeArtifactList(dto.dois) }
+        : {}),
+      ...(dto.fundingAgencies !== undefined
+        ? { fundingAgencies: this.normalizeArtifactList(dto.fundingAgencies) }
+        : {}),
+      ...(dto.acknowledgements !== undefined
+        ? { acknowledgements: dto.acknowledgements.trim() }
+        : {}),
+      ...(dto.fingerprint !== undefined
+        ? {
+            fingerprint: dto.fingerprint,
+            sizeBytes: dto.sizeBytes!,
+            extension: dto.extension!,
+          }
+        : {}),
+    };
+  }
+
+  async updateArtifact(
+    principal: DemoPrincipal,
+    recordId: string,
+    dto: UpdateDemoArtifactDto,
+  ) {
+    const payload = this.updateArtifactPayload(dto);
+    const payloadHash = this.artifactPayloadHash(payload);
+    const runtime = await this.assertOpen();
+    const { record, contribution } = await this.demoRecord(
+      DemoContributionType.ARTIFACT,
+      recordId,
+      false,
+      principal,
+      runtime,
+    );
+    const artifact = record as ArtifactEntity;
+    if (
+      artifact.visibility !== RecordVisibility.PUBLIC ||
+      artifact.submissionState !== SubmissionState.SUCCESS ||
+      !artifact.blockchainTxId
+    ) {
+      throw new ConflictException(
+        'Artifact must be publicly confirmed before an edit',
+      );
+    }
+
+    const existing = await this.artifactEdits.findOneBy({
+      recordId,
+      requestId: dto.requestId,
+    });
+    if (existing) {
+      if (
+        existing.sessionHash !== principal.sessionHash ||
+        existing.payloadHash !== payloadHash
+      ) {
+        throw new ConflictException(
+          'The edit request identifier has a different payload or owner',
+        );
+      }
+      if (existing.queuedAt) return this.artifactResponse(recordId, principal);
+      const outbox = await this.dataSource
+        .getRepository(OutboxEntity)
+        .existsBy({
+          messageId: dto.requestId,
+          routingKey: 'artifact.update',
+          aggregateId: recordId,
+        });
+      if (outbox) {
+        existing.queuedAt = new Date();
+        await this.artifactEdits.save(existing);
+        return this.artifactResponse(recordId, principal);
+      }
+      if (Date.now() - existing.reservedAt.getTime() < 30_000) {
+        throw new ConflictException(
+          'The edit request is still being processed; retry shortly',
+        );
+      }
+    }
+
+    const latest = await this.artifactEdits.findOne({
+      where: { recordId },
+      order: { editNumber: 'DESC' },
+    });
+    if (
+      !existing &&
+      latest &&
+      (!latest.queuedAt || latest.baselineTxId === artifact.blockchainTxId)
+    ) {
+      throw new ConflictException(
+        'Wait for the previous artifact edit to confirm',
+      );
+    }
+    if (!existing && latest && latest.editNumber >= 2) {
+      throw new HttpException(
+        'This artifact has reached its edit limit',
+        HttpStatus.TOO_MANY_REQUESTS,
+      );
+    }
+    const edit =
+      existing ||
+      this.artifactEdits.create({
+        recordId,
+        requestId: dto.requestId,
+        sessionHash: principal.sessionHash,
+        payloadHash,
+        editNumber: latest ? latest.editNumber + 1 : 1,
+        baselineTxId: artifact.blockchainTxId,
+        reservedAt: new Date(),
+        queuedAt: null,
+        retentionExpiresAt: this.plusDays(new Date()),
+      });
+    if (!existing) {
+      try {
+        await this.artifactEdits.save(edit);
+      } catch {
+        throw new ConflictException(
+          'An artifact edit is already being processed',
+        );
+      }
+    }
+
+    const patch: UpdateArtifactUserDto = {
+      submission_comment: payload.submissionComment,
+      ...(payload.keywords !== undefined
+        ? {
+            keywords: [
+              'usrse26-demo',
+              contribution.researchContext!.toLowerCase(),
+              ...payload.keywords,
+            ],
+          }
+        : {}),
+      ...(payload.links !== undefined ? { links: payload.links } : {}),
+      ...(payload.dois !== undefined ? { dois: payload.dois } : {}),
+      ...(payload.fundingAgencies !== undefined
+        ? { fundingAgencies: payload.fundingAgencies }
+        : {}),
+      ...(payload.acknowledgements !== undefined
+        ? { acknowledgements: payload.acknowledgements }
+        : {}),
+      ...(payload.fingerprint !== undefined
+        ? {
+            footprint: payload.fingerprint,
+            manifest: [
+              {
+                hash: payload.fingerprint,
+                filename: `demo-artifact-${recordId}.${payload.extension}`,
+                algorithm: 'sha256',
+              },
+            ],
+          }
+        : {}),
+    };
+    try {
+      await this.artifactService.updateUser(
+        recordId,
+        patch,
+        this.submitter(principal).email,
+        dto.requestId,
+        principal.organizationId,
+        principal.sessionId,
+      );
+    } catch (error) {
+      const queued = await this.dataSource
+        .getRepository(OutboxEntity)
+        .existsBy({
+          messageId: dto.requestId,
+          routingKey: 'artifact.update',
+          aggregateId: recordId,
+        });
+      if (queued) {
+        edit.queuedAt = new Date();
+        await this.artifactEdits.save(edit);
+        return this.artifactResponse(recordId, principal);
+      }
+      if (!existing) await this.artifactEdits.delete(edit.id);
+      throw error;
+    }
+    edit.queuedAt = new Date();
+    await this.artifactEdits.save(edit);
     return this.artifactResponse(recordId, principal);
   }
 
@@ -1247,6 +1639,11 @@ export class DemoService {
       recordId,
       principal,
     );
+    const contribution = await this.contributions.findOneByOrFail({
+      recordType: DemoContributionType.ARTIFACT,
+      recordId,
+      sessionHash: principal.sessionHash,
+    });
     const artifact = await this.artifactService.findOne(
       recordId,
       principal.organizationId,
@@ -1254,6 +1651,17 @@ export class DemoService {
     return {
       id: artifact.id,
       title: artifact.title,
+      description: artifact.description,
+      submissionComment: artifact.submission_comment,
+      keywords: artifact.keywords.filter(
+        (keyword) =>
+          keyword !== 'usrse26-demo' &&
+          keyword !== contribution.researchContext?.toLowerCase(),
+      ),
+      links: artifact.links,
+      dois: artifact.dois,
+      fundingAgencies: artifact.fundingAgencies,
+      acknowledgements: artifact.acknowledgements,
       organization: artifact.organization?.name,
       contributorAlias: artifact.submitterUsername,
       fingerprint: artifact.footprint,
@@ -1299,11 +1707,10 @@ export class DemoService {
       recordId,
       principal,
     );
-    const result = await this.artifactService.getHistory(
+    const result = await this.publicHistory(
+      DemoContributionType.ARTIFACT,
       recordId,
-      { limit: '100', order: 'desc', includeValue: 'true' },
       correlationId,
-      principal.organizationId,
     );
     await this.recordInternalEvent(
       principal,
@@ -1676,17 +2083,20 @@ export class DemoService {
 
   async purgeExpired() {
     const now = new Date();
-    const [events, feedback, contributions, sessions] = await Promise.all([
-      this.events.delete({ retentionExpiresAt: LessThan(now) }),
-      this.feedback.delete({ retentionExpiresAt: LessThan(now) }),
-      this.contributions.delete({ retentionExpiresAt: LessThan(now) }),
-      this.sessions.delete({ retentionExpiresAt: LessThan(now) }),
-    ]);
+    const [events, feedback, contributions, edits, sessions] =
+      await Promise.all([
+        this.events.delete({ retentionExpiresAt: LessThan(now) }),
+        this.feedback.delete({ retentionExpiresAt: LessThan(now) }),
+        this.contributions.delete({ retentionExpiresAt: LessThan(now) }),
+        this.artifactEdits.delete({ retentionExpiresAt: LessThan(now) }),
+        this.sessions.delete({ retentionExpiresAt: LessThan(now) }),
+      ]);
     return {
       purged: {
         events: events.affected || 0,
         feedback: feedback.affected || 0,
         contributions: contributions.affected || 0,
+        artifactEdits: edits.affected || 0,
         sessions: sessions.affected || 0,
       },
     };

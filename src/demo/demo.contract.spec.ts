@@ -27,6 +27,7 @@ import { DemoController } from './demo.controller';
 import { DemoService } from './demo.service';
 import { DemoLifecycleState, DemoOrganizationSlug } from './demo.enums';
 import { DemoContributionEntity } from './entities/demo-contribution.entity';
+import { DemoArtifactEditEntity } from './entities/demo-artifact-edit.entity';
 import { DemoEventEntity } from './entities/demo-event.entity';
 import { DemoFeedbackEntity } from './entities/demo-feedback.entity';
 import { DemoRuntimeEntity } from './entities/demo-runtime.entity';
@@ -51,9 +52,11 @@ describe('US-RSE 2026 demonstration contract', () => {
   let demoService: DemoService;
   let ghwService: GhwService;
   let artifactCreates: number;
+  let artifactUpdates: number;
 
   beforeEach(async () => {
     artifactCreates = 0;
+    artifactUpdates = 0;
     const entities = [
       OrganizationEntity,
       OrganizationMembershipEntity,
@@ -66,6 +69,7 @@ describe('US-RSE 2026 demonstration contract', () => {
       DemoEventEntity,
       DemoFeedbackEntity,
       DemoContributionEntity,
+      DemoArtifactEditEntity,
     ];
     const module = await Test.createTestingModule({
       imports: [
@@ -148,6 +152,24 @@ describe('US-RSE 2026 demonstration contract', () => {
               artifactId: id,
               history: [{ transactionId: 'demo-transaction' }],
             }),
+            updateUser: async (
+              id: string,
+              dto: any,
+              _email: string,
+              _correlationId: string,
+              organizationId: string,
+            ) => {
+              const artifact = await artifacts.findOne({
+                where: { id },
+                relations: { organization: true },
+              });
+              if (!artifact || artifact.organization.id !== organizationId) {
+                throw new NotFoundException();
+              }
+              artifactUpdates += 1;
+              Object.assign(artifact, dto);
+              return artifacts.save(artifact);
+            },
           }),
         },
         {
@@ -296,6 +318,13 @@ describe('US-RSE 2026 demonstration contract', () => {
           .set('Cookie', guest.cookie)
           .set('X-Demo-CSRF', guest.csrfToken)
           .send(body),
+      updateArtifact: (id: string, body: Record<string, unknown>) =>
+        request(app.getHttpServer())
+          .patch(`/api/v1/demo/artifacts/${id}`)
+          .set('Origin', ORIGIN)
+          .set('Cookie', guest.cookie)
+          .set('X-Demo-CSRF', guest.csrfToken)
+          .send(body),
       workflow: (body: Record<string, unknown>) =>
         request(app.getHttpServer())
           .post('/api/v1/demo/workflows')
@@ -312,6 +341,15 @@ describe('US-RSE 2026 demonstration contract', () => {
     sizeBytes: 1024,
     extension: 'csv',
     researchContext: 'RESEARCH_DATASET',
+    title: `Conference microscopy dataset ${randomUUID().slice(0, 8)}`,
+    description:
+      'A public demonstration dataset describing microscopy observations and reproducible image analysis.',
+    submissionComment: 'Created for a public provenance demonstration.',
+    keywords: ['microscopy', 'provenance'],
+    links: [],
+    dois: [],
+    fundingAgencies: [],
+    acknowledgements: 'Conference demonstration.',
   });
 
   it('uses an exact-origin, cookie-only, CSRF-protected guest boundary', async () => {
@@ -712,6 +750,12 @@ describe('US-RSE 2026 demonstration contract', () => {
               'submissionState',
               'submittedAt',
               'verified',
+              'keywords',
+              'links',
+              'dois',
+              'fundingAgencies',
+              'acknowledgements',
+              'submissionComment',
             ]
           : [
               'id',
@@ -880,7 +924,7 @@ describe('US-RSE 2026 demonstration contract', () => {
     ]);
   });
 
-  it('keeps guarded detail, status and raw history exclusive to the contributing session', async () => {
+  it('keeps guarded detail and history exclusive to the contributing session', async () => {
     const owner = await createGuest();
     const peer = await createGuest();
     const artifact = await mutate(owner).artifact(artifactBody()).expect(201);
@@ -1288,5 +1332,167 @@ describe('US-RSE 2026 demonstration contract', () => {
       .send({ eventName: 'SURVEY_SHOWN' })
       .expect(201);
     await request(app.getHttpServer()).get('/api/v1/demo/counters').expect(200);
+  });
+
+  it('accepts the bounded rich guest form and rejects raw filename and weak text', async () => {
+    const guest = await createGuest();
+    const body = artifactBody();
+    const created = await mutate(guest).artifact(body).expect(201);
+    expect(created.body).toMatchObject({
+      title: body.title,
+      description: body.description,
+      submissionComment: body.submissionComment,
+      keywords: body.keywords,
+      acknowledgements: body.acknowledgements,
+    });
+    await mutate(guest)
+      .artifact({ ...artifactBody(), originalFilename: 'secret.csv' })
+      .expect(400);
+    await mutate(guest)
+      .artifact({ ...artifactBody(), title: '  ' })
+      .expect(400);
+    await mutate(guest)
+      .artifact({ ...artifactBody(), description: 'short' })
+      .expect(400);
+    const stored = await dataSource
+      .getRepository(ArtifactEntity)
+      .findOneByOrFail({ id: created.body.id });
+    expect(stored.manifest[0].filename).toMatch(/^demo-artifact-/);
+    expect(JSON.stringify(stored)).not.toContain('secret.csv');
+  });
+
+  it('limits owned edits, binds retries, and waits for each ledger confirmation', async () => {
+    const owner = await createGuest();
+    const peer = await createGuest();
+    const otherOrg = await createGuest(DemoOrganizationSlug.CITIZEN_SCIENCE);
+    const created = await mutate(owner).artifact(artifactBody()).expect(201);
+    const id = created.body.id;
+    const artifacts = dataSource.getRepository(ArtifactEntity);
+    await artifacts.update(id, {
+      submissionState: SubmissionState.SUCCESS,
+      blockchainTxId: 'tx-create',
+    });
+    const first = {
+      requestId: randomUUID(),
+      submissionComment: 'This revision adds a reproducible keyword.',
+      keywords: ['reproducible', 'microscopy'],
+    };
+    await mutate(peer).updateArtifact(id, first).expect(404);
+    await mutate(otherOrg).updateArtifact(id, first).expect(404);
+    await mutate(owner)
+      .updateArtifact(id, { ...first, title: 'Forbidden title' })
+      .expect(400);
+    await request(app.getHttpServer())
+      .patch(`/api/v1/demo/artifacts/${id}`)
+      .set('Origin', ORIGIN)
+      .set('Cookie', owner.cookie)
+      .send(first)
+      .expect(403);
+    const edited = await mutate(owner).updateArtifact(id, first).expect(200);
+    expect(edited.body.keywords).toEqual(first.keywords);
+    expect(artifactUpdates).toBe(1);
+    await mutate(owner).updateArtifact(id, first).expect(200);
+    expect(artifactUpdates).toBe(1);
+    await mutate(owner)
+      .updateArtifact(id, { ...first, keywords: ['changed'] })
+      .expect(409);
+    const second = {
+      requestId: randomUUID(),
+      submissionComment: 'This revision adds a second public keyword.',
+      keywords: ['second'],
+    };
+    await mutate(owner).updateArtifact(id, second).expect(409);
+    await artifacts.update(id, {
+      blockchainTxId: 'tx-first',
+      updatedAt: new Date(),
+    });
+    await mutate(owner).updateArtifact(id, second).expect(200);
+    expect(artifactUpdates).toBe(2);
+    await artifacts.update(id, {
+      blockchainTxId: 'tx-second',
+      updatedAt: new Date(),
+    });
+    await mutate(owner)
+      .updateArtifact(id, {
+        requestId: randomUUID(),
+        submissionComment: 'A third revision must be rejected by quota.',
+        keywords: ['third'],
+      })
+      .expect(429);
+    await demoService.updateStatus({
+      state: DemoLifecycleState.READ_ONLY,
+      runId: 'contract-test',
+    });
+    await mutate(owner).updateArtifact(id, first).expect(503);
+  });
+
+  it('returns only each ledger revision’s safe snapshot fields', async () => {
+    const guest = await createGuest();
+    const created = await mutate(guest).artifact(artifactBody()).expect(201);
+    await dataSource.getRepository(ArtifactEntity).update(created.body.id, {
+      submissionState: SubmissionState.SUCCESS,
+      blockchainTxId: 'tx-confirmed',
+    });
+    (ghwService.fetchHistory as jest.Mock).mockResolvedValue({
+      items: [
+        {
+          transactionId: 'tx-2',
+          committedAt: '2026-09-26T02:00:00Z',
+          deleted: false,
+          record: {
+            revision: 2,
+            createdBy: 'secret-user',
+            payload: {
+              title: 'Version two',
+              keywords: ['second'],
+              submission_comment: 'Public second revision',
+              manifest: [{ filename: 'original-private-name.csv' }],
+              submitterEmail: 'secret@example.org',
+            },
+          },
+        },
+        {
+          transactionId: 'tx-1',
+          committedAt: '2026-09-26T01:00:00Z',
+          deleted: false,
+          record: {
+            revision: 1,
+            payload: { title: 'Version one', keywords: ['first'] },
+          },
+        },
+      ],
+      count: 2,
+    });
+    const response = await request(app.getHttpServer())
+      .get(`/api/v1/demo/public/artifacts/${created.body.id}/history`)
+      .expect(200);
+    expect(response.body.items).toEqual([
+      {
+        txId: 'tx-2',
+        timestamp: '2026-09-26T02:00:00Z',
+        isDelete: false,
+        revision: 2,
+        snapshot: {
+          title: 'Version two',
+          keywords: ['second'],
+          submissionComment: 'Public second revision',
+        },
+      },
+      {
+        txId: 'tx-1',
+        timestamp: '2026-09-26T01:00:00Z',
+        isDelete: false,
+        revision: 1,
+        snapshot: { title: 'Version one', keywords: ['first'] },
+      },
+    ]);
+    expect(JSON.stringify(response.body)).not.toMatch(
+      /secret|filename|email|session|createdBy|manifest/i,
+    );
+    const owned = await request(app.getHttpServer())
+      .get(`/api/v1/demo/artifacts/${created.body.id}/history`)
+      .set('Cookie', guest.cookie)
+      .expect(200);
+    expect(owned.body).toEqual(response.body);
   });
 });

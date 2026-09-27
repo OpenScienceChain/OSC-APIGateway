@@ -28,7 +28,9 @@ import { DemoRuntimeEntity } from './demo/entities/demo-runtime.entity';
 import { DemoEventEntity } from './demo/entities/demo-event.entity';
 import { DemoFeedbackEntity } from './demo/entities/demo-feedback.entity';
 import { DemoContributionEntity } from './demo/entities/demo-contribution.entity';
+import { DemoArtifactEditEntity } from './demo/entities/demo-artifact-edit.entity';
 import { CreateUsrse26Demo1720000005000 } from './migrations/1720000005000-create-usrse26-demo';
+import { RestoreDemoArtifactPortal1720000006000 } from './migrations/1720000006000-restore-demo-artifact-portal';
 
 @Module({
   imports: [
@@ -91,6 +93,7 @@ import { CreateUsrse26Demo1720000005000 } from './migrations/1720000005000-creat
             DemoEventEntity,
             DemoFeedbackEntity,
             DemoContributionEntity,
+            DemoArtifactEditEntity,
           ],
           migrations: [
             CreateBaselineSchema1719999999000,
@@ -100,6 +103,7 @@ import { CreateUsrse26Demo1720000005000 } from './migrations/1720000005000-creat
             AddRecordVisibility1720000003000,
             AddArtifactArchival1720000004000,
             CreateUsrse26Demo1720000005000,
+            RestoreDemoArtifactPortal1720000006000,
           ],
           migrationsRun:
             configService.get<string>(

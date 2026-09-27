@@ -35,6 +35,9 @@ export class DemoContributionEntity {
   @Column({ nullable: true, length: 40 })
   researchContext: string | null;
 
+  @Column({ nullable: true, length: 64 })
+  createPayloadHash: string | null;
+
   @Column({
     type: process.env.NODE_ENV === 'test' ? 'simple-json' : 'jsonb',
     nullable: true,

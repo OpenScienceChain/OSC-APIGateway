@@ -4,6 +4,7 @@ import {
   Get,
   Headers,
   Param,
+  Patch,
   Post,
   Put,
   Query,
@@ -17,6 +18,7 @@ import { DemoContributionType } from './demo.enums';
 import { DemoService } from './demo.service';
 import { DemoPrincipal, DemoSessionResult } from './demo.types';
 import { CreateDemoArtifactDto } from './dto/create-demo-artifact.dto';
+import { UpdateDemoArtifactDto } from './dto/update-demo-artifact.dto';
 import { CreateDemoEventDto } from './dto/create-demo-event.dto';
 import { CreateDemoFeedbackDto } from './dto/create-demo-feedback.dto';
 import { CreateDemoSessionDto } from './dto/create-demo-session.dto';
@@ -159,6 +161,16 @@ export class DemoController {
   @UseGuards(DemoAuthGuard)
   artifact(@Req() request: DemoRequest, @Param('id') id: string) {
     return this.demoService.artifactResponse(id, request.user);
+  }
+
+  @Patch('artifacts/:id')
+  @UseGuards(DemoOriginGuard, DemoAuthGuard, DemoMutationGuard)
+  updateArtifact(
+    @Req() request: DemoRequest,
+    @Param('id') id: string,
+    @Body() dto: UpdateDemoArtifactDto,
+  ) {
+    return this.demoService.updateArtifact(request.user, id, dto);
   }
 
   @Get('artifacts/:id/history')

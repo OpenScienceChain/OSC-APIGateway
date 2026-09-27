@@ -9,6 +9,7 @@ import { WorkflowModule } from '../workflow/workflow.module';
 import { DemoController } from './demo.controller';
 import { DemoService } from './demo.service';
 import { DemoContributionEntity } from './entities/demo-contribution.entity';
+import { DemoArtifactEditEntity } from './entities/demo-artifact-edit.entity';
 import { DemoEventEntity } from './entities/demo-event.entity';
 import { DemoFeedbackEntity } from './entities/demo-feedback.entity';
 import { DemoRuntimeEntity } from './entities/demo-runtime.entity';
@@ -29,6 +30,7 @@ import { DemoOriginGuard } from './guards/demo-origin.guard';
       DemoEventEntity,
       DemoFeedbackEntity,
       DemoContributionEntity,
+      DemoArtifactEditEntity,
       OrganizationEntity,
       ArtifactEntity,
       WorkflowEntity,

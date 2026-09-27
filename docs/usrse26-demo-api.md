@@ -13,8 +13,8 @@ The default event window is October 20, 2026 at 8:00 AM Pacific daylight time
 time (`2026-10-23T15:00:00Z`). It is exactly 72 hours.
 
 `GET /api/v1/demo/status` returns one of `SCHEDULED`, `PREPARING`, `OPEN`,
-`READ_ONLY`, or `CLOSED`, the UTC open/close instants, and a nontechnical
-message. `GET /api/v1/demo/counters` reports anonymous browser sessions,
+`READ_ONLY`, or `CLOSED`, the current nonsecret run ID, UTC open/close instants,
+and a nontechnical message. `GET /api/v1/demo/counters` reports anonymous browser sessions,
 accepted and confirmed records, and provenance history views. Neither endpoint
 uses a guest cookie.
 
@@ -58,10 +58,21 @@ the organization and capability.
 
 `POST /api/v1/demo/artifacts` accepts a client-generated UUID request ID,
 lowercase SHA-256 fingerprint, size from 1 byte through 10 MiB, allowlisted
-lowercase extension, and one controlled research context. It has no field for
-file bytes, original filename, links, HTML, or free-form public text. The
-server generates every public field, including a manifest name of the form
-`demo-artifact-<record UUID>.<extension>`.
+lowercase extension, one controlled research context, title (3–200 characters),
+description (50–3000), submission comment (20–1000), and bounded optional
+keywords, HTTPS links, DOIs, funding agencies, and acknowledgements. Free text
+is public and unmoderated. There is no field for file bytes or an original
+filename. The server binds organization and visibility, and generates a
+manifest name of the form `demo-artifact-<record UUID>.<extension>`.
+
+`PATCH /api/v1/demo/artifacts/:id` allows the contributing guest session to
+make at most two edits to a confirmed public artifact while the same run is
+`OPEN`. It requires a new request ID, submission comment, and at least one
+editable field: keywords, links, DOIs, funding agencies, acknowledgements, or
+a replacement fingerprint/size/extension triple. Title and description stay
+immutable. A new edit waits for the preceding ledger revision to confirm;
+same-payload retries do not create another revision. The owner receives the
+same sanitized version-specific history as the public route.
 
 `POST /api/v1/demo/workflows` accepts a request ID, one to three distinct
 artifact UUIDs, and one controlled research context. Every linked artifact
@@ -92,8 +103,27 @@ fields:
 - `GET /api/v1/demo/artifacts/:id/history`
 - `GET /api/v1/demo/workflows/:id`
 
-There are intentionally no guest update, delete, administration, role-change,
+Public catalog/detail/history reads work across both demo organizations during
+`OPEN` and `READ_ONLY`. Artifact history is sourced from Fabric and allowlists
+the public metadata snapshot from each revision; it never returns the raw
+ledger record, private actor fields, a manifest, or an original filename.
+There are intentionally no guest delete, administration, role-change,
 history-refresh, or internal-operation interfaces.
+
+## Local example seed
+
+`node scripts/seed-demo-artifact-history.mjs --run-id <exact-run-id>
+--base-url http://127.0.0.1:<gateway-port> --origin <configured-origin>`
+is a no-network dry run. Add `--execute` only after the local Gateway/Fabric
+stack reports that exact run as `OPEN`. The script creates two clearly labeled
+synthetic examples, one per organization, each with two confirmed edits. It
+uses the normal guest endpoints, quotas, cookie, CSRF, outbox, and Fabric path.
+It saves no session credentials or file contents. If interrupted, complete
+examples are skipped. An incomplete example can be resumed only with its
+still-valid original guest cookie and CSRF supplied in environment variables
+`DEMO_SEED_NEUROSCIENCE_COOKIE`/`DEMO_SEED_NEUROSCIENCE_CSRF` or
+`DEMO_SEED_CITIZEN_SCIENCE_COOKIE`/`DEMO_SEED_CITIZEN_SCIENCE_CSRF`.
+Otherwise the script fails closed rather than creating a duplicate.
 
 ## Telemetry, survey, and retention
 

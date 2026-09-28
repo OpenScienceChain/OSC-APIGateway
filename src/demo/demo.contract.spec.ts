@@ -1209,9 +1209,10 @@ describe('US-RSE 2026 demonstration contract', () => {
     expect(workflowDetail.body.artifactIds).toEqual([]);
   });
 
-  it('denies workflow links to another session in the same organization and ineligible artifacts', async () => {
+  it('links confirmed same-organization artifacts while denying other organizations and ineligible records', async () => {
     const owner = await createGuest();
     const peer = await createGuest();
+    const otherOrganization = await createGuest(DemoOrganizationSlug.CITIZEN_SCIENCE);
     const artifact = await mutate(owner).artifact(artifactBody()).expect(201);
     const body = {
       requestId: randomUUID(),
@@ -1227,6 +1228,12 @@ describe('US-RSE 2026 demonstration contract', () => {
     await mutate(owner).workflow(body).expect(403);
     await confirmArtifact(artifact.body.id);
     await mutate(owner).workflow(body).expect(201);
+    await mutate(peer)
+      .workflow({ ...body, requestId: randomUUID() })
+      .expect(201);
+    await mutate(otherOrganization)
+      .workflow({ ...body, requestId: randomUUID() })
+      .expect(403);
     await dataSource.getRepository(ArtifactEntity).update(artifact.body.id, {
       submissionState: SubmissionState.FAILED,
     });

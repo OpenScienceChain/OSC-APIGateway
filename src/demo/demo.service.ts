@@ -1292,17 +1292,18 @@ export class DemoService {
           DemoContributionType.ARTIFACT,
           artifactId,
           true,
-          principal,
+          undefined,
           runtime,
         );
         artifact = eligible.record as ArtifactEntity;
       } catch (error) {
         if (!(error instanceof NotFoundException)) throw error;
         throw new ForbiddenException(
-          'Workflows may link only eligible artifacts from this demonstration session',
+          'Workflows may link only eligible artifacts from this demonstration run',
         );
       }
       if (
+        artifact.organization.id !== principal.organizationId ||
         artifact.submissionState !== SubmissionState.SUCCESS ||
         !artifact.blockchainTxId?.trim()
       ) {

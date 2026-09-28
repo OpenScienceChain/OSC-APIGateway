@@ -222,7 +222,7 @@ describe('US-RSE 2026 demonstration contract', () => {
                   description: dto.description,
                   visibility: dto.visibility,
                   keywords: dto.keywords,
-                  githubRepositories: [],
+                  githubRepositories: dto.githubRepositories,
                   artifacts: linkedArtifacts,
                   organization,
                   submitterEmail: submitter.email,
@@ -794,6 +794,9 @@ describe('US-RSE 2026 demonstration contract', () => {
               'submissionState',
               'submittedAt',
               'artifactIds',
+              'keywords',
+              'submissionComment',
+              'githubRepositories',
             ]
         ).sort(),
       );
@@ -1252,6 +1255,58 @@ describe('US-RSE 2026 demonstration contract', () => {
     await mutate(owner)
       .workflow({ ...body, requestId: randomUUID() })
       .expect(403);
+  });
+
+  it('persists authored workflow fields and rejects changed idempotency payloads', async () => {
+    const owner = await createGuest();
+    const artifact = await mutate(owner).artifact(artifactBody()).expect(201);
+    await confirmArtifact(artifact.body.id);
+    const body = {
+      requestId: randomUUID(),
+      artifactIds: [artifact.body.id],
+      researchContext: 'REPRODUCIBLE_ANALYSIS',
+      title: `Microscopy analysis workflow ${randomUUID().slice(0, 8)}`,
+      description:
+        'A reproducible microscopy workflow linking a confirmed dataset to its analysis steps and software.',
+      submissionComment: 'Initial conference workflow submission.',
+      keywords: ['microscopy', 'reproducibility'],
+      githubRepositories: [
+        {
+          url: 'https://github.com/example/research-workflow',
+          description: 'Reproducible analysis source.',
+          gitHash: 'abcdef0123456789',
+          contents: [{ filename: 'analysis.py', hash: 'a'.repeat(64) }],
+        },
+      ],
+    };
+    const created = await mutate(owner).workflow(body).expect(201);
+    expect(created.body).toMatchObject({
+      title: body.title,
+      description: body.description,
+    });
+    const publicDetail = await request(app.getHttpServer())
+      .get(`/api/v1/demo/public/workflows/${created.body.id}`)
+      .expect(200);
+    expect(publicDetail.body).toMatchObject({
+      title: body.title,
+      description: body.description,
+      keywords: body.keywords,
+      githubRepositories: [{ url: body.githubRepositories[0].url }],
+    });
+    expect(JSON.stringify(publicDetail.body)).not.toContain('analysis.py');
+    await mutate(owner).workflow(body).expect(201);
+    await mutate(owner)
+      .workflow({ ...body, title: 'Different workflow title' })
+      .expect(409);
+    await mutate(owner)
+      .workflow({
+        ...body,
+        requestId: randomUUID(),
+        githubRepositories: [
+          { ...body.githubRepositories[0], url: 'https://evil.example/repo' },
+        ],
+      })
+      .expect(400);
   });
 
   it('retries an accepted workflow after its linked artifact fails or is archived', async () => {

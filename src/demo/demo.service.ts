@@ -541,10 +541,25 @@ export class DemoService {
         submissionComment: artifact.submission_comment,
       };
     }
-    const linkedIds = (record as WorkflowEntity).artifacts.map(
-      (artifact) => artifact.id,
-    );
-    if (!linkedIds.length) return { ...common, artifactIds: [] };
+    const workflow = record as WorkflowEntity;
+    const workflowMetadata = {
+      keywords: (workflow.keywords || []).filter(
+        (keyword) =>
+          keyword !== 'usrse26-demo' &&
+          keyword !== contribution.researchContext?.toLowerCase(),
+      ),
+      submissionComment: workflow.submission_comment,
+      githubRepositories: (workflow.githubRepositories || [])
+        .slice(0, 3)
+        .map((repository) => ({
+          url: repository.url,
+          description: repository.description,
+          gitHash: repository.gitHash,
+        })),
+    };
+    const linkedIds = workflow.artifacts.map((artifact) => artifact.id);
+    if (!linkedIds.length)
+      return { ...common, ...workflowMetadata, artifactIds: [] };
     const linkedContributions = await this.contributions.findBy({
       recordType: DemoContributionType.ARTIFACT,
       recordId: In(linkedIds),
@@ -579,6 +594,7 @@ export class DemoService {
     );
     return {
       ...common,
+      ...workflowMetadata,
       artifactIds: linkedIds.filter((id) => allowedIds.has(id)),
     };
   }
@@ -1172,24 +1188,96 @@ export class DemoService {
     dto: CreateDemoWorkflowDto,
     correlationId?: string,
   ) {
+    const payload = this.createWorkflowPayload(dto, principal, recordId);
     return this.workflowService.create(
       {
-        title: `Demo workflow ${principal.contributorAlias} ${recordId.slice(0, 8)}`,
-        description: this.controlledDescription(
-          dto.researchContext,
-          'workflow',
-        ),
+        title: payload.title,
+        description: payload.description,
         visibility: RecordVisibility.PUBLIC,
-        keywords: ['usrse26-demo', dto.researchContext.toLowerCase()],
-        githubRepositories: [],
+        keywords: [
+          'usrse26-demo',
+          dto.researchContext.toLowerCase(),
+          ...payload.keywords,
+        ],
+        githubRepositories: payload.githubRepositories,
         artifactIds: dto.artifactIds,
-        submission_comment:
-          'Created through the bounded US-RSE 2026 interactive demonstration.',
+        submission_comment: payload.submissionComment,
       },
       this.submitter(principal),
       correlationId || dto.requestId,
       recordId,
     );
+  }
+
+  private createWorkflowPayload(
+    dto: CreateDemoWorkflowDto,
+    principal: DemoPrincipal,
+    recordId: string,
+  ) {
+    const authoredFields = [dto.title, dto.description, dto.submissionComment];
+    if (
+      authoredFields.some((value) => value !== undefined) &&
+      authoredFields.some((value) => value === undefined)
+    ) {
+      throw new BadRequestException(
+        'Workflow title, description, and submission comment must be supplied together',
+      );
+    }
+    const title =
+      dto.title === undefined
+        ? `Demo workflow ${principal.contributorAlias} ${recordId.slice(0, 8)}`
+        : this.normalizeArtifactText(dto.title, 'Title');
+    const description =
+      dto.description === undefined
+        ? this.controlledDescription(dto.researchContext, 'workflow')
+        : this.normalizeArtifactText(dto.description, 'Description');
+    const submissionComment =
+      dto.submissionComment === undefined
+        ? 'Created through the bounded US-RSE 2026 interactive demonstration.'
+        : this.normalizeArtifactText(
+            dto.submissionComment,
+            'Submission comment',
+          );
+    if (
+      title.length < 3 ||
+      description.length < 50 ||
+      submissionComment.length < 20
+    ) {
+      throw new BadRequestException(
+        'Workflow text is shorter than the public form minimum',
+      );
+    }
+    const keywords = this.normalizeArtifactList(dto.keywords);
+    if (keywords.join('').length > 960) {
+      throw new BadRequestException(
+        'Workflow keywords exceed the product limit',
+      );
+    }
+    const githubRepositories = (dto.githubRepositories || []).map(
+      (repository) => ({
+        url: repository.url.trim(),
+        description: repository.description?.trim() || '',
+        gitHash: repository.gitHash?.trim() || '',
+        contents: (repository.contents || []).map((content) => ({
+          filename: content.filename.trim(),
+          hash: content.hash?.trim() || '',
+        })),
+      }),
+    );
+    if (
+      githubRepositories.some((repository) =>
+        repository.contents.some((content) => !content.filename),
+      )
+    ) {
+      throw new BadRequestException('Repository contents require a filename');
+    }
+    return {
+      title,
+      description,
+      submissionComment,
+      keywords,
+      githubRepositories,
+    };
   }
 
   private async assertConfirmedWorkflowArtifacts(
@@ -1592,6 +1680,23 @@ export class DemoService {
     dto: CreateDemoWorkflowDto,
     correlationId?: string,
   ) {
+    const authoredPayload = {
+      artifactIds: dto.artifactIds,
+      researchContext: dto.researchContext,
+      title: dto.title,
+      description: dto.description,
+      submissionComment: dto.submissionComment,
+      keywords: dto.keywords,
+      githubRepositories: dto.githubRepositories,
+    };
+    const payloadHash = this.artifactPayloadHash(authoredPayload);
+    const hasAuthoredFields = [
+      dto.title,
+      dto.description,
+      dto.submissionComment,
+      dto.keywords,
+      dto.githubRepositories,
+    ].some((value) => value !== undefined);
     const existing = await this.contributions.findOneBy({
       sessionHash: principal.sessionHash,
       requestId: dto.requestId,
@@ -1604,7 +1709,11 @@ export class DemoService {
       }
       if (
         existing.researchContext !== dto.researchContext ||
-        JSON.stringify(existing.artifactIds) !== JSON.stringify(dto.artifactIds)
+        JSON.stringify(existing.artifactIds) !==
+          JSON.stringify(dto.artifactIds) ||
+        (existing.createPayloadHash
+          ? existing.createPayloadHash !== payloadHash
+          : hasAuthoredFields)
       ) {
         throw new ConflictException(
           'The request identifier was already used with a different workflow payload',
@@ -1674,6 +1783,7 @@ export class DemoService {
       extension: null,
       fingerprint: null,
       researchContext: dto.researchContext,
+      createPayloadHash: payloadHash,
       artifactIds: dto.artifactIds,
       acceptedAt: now,
       retentionExpiresAt: this.plusDays(now),
@@ -1755,6 +1865,11 @@ export class DemoService {
       recordId,
       principal,
     );
+    const contribution = await this.contributions.findOneByOrFail({
+      recordType: DemoContributionType.WORKFLOW,
+      recordId,
+      sessionHash: principal.sessionHash,
+    });
     const workflow = await this.workflowService.findOne(
       recordId,
       principal.organizationId,
@@ -1762,6 +1877,14 @@ export class DemoService {
     return {
       id: workflow.id,
       title: workflow.title,
+      description: workflow.description,
+      keywords: workflow.keywords.filter(
+        (keyword) =>
+          keyword !== 'usrse26-demo' &&
+          keyword !== contribution.researchContext?.toLowerCase(),
+      ),
+      submissionComment: workflow.submission_comment,
+      githubRepositories: workflow.githubRepositories,
       organization: workflow.organization?.name,
       contributorAlias: workflow.submitterUsername,
       artifactIds: workflow.artifacts.map((artifact) => artifact.id),

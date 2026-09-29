@@ -19,8 +19,10 @@ export class GhwService {
   private readonly defaultBaseUrl: string;
   private readonly nsgBaseUrl: string;
   private readonly citizenScienceBaseUrl: string;
+  private readonly magneticArchBaseUrl: string;
   private readonly nsgOrganizationId: string;
   private readonly citizenScienceOrganizationId: string;
+  private readonly magneticArchOrganizationId: string;
 
   constructor(private readonly configService: ConfigService) {
     this.defaultBaseUrl = this.configService.get<string>(
@@ -32,6 +34,10 @@ export class GhwService {
       'GHW_CITIZEN_SCIENCE_URL',
       '',
     );
+    this.magneticArchBaseUrl = this.configService.get<string>(
+      'GHW_MAGNETIC_ARCH_URL',
+      '',
+    );
     this.nsgOrganizationId = this.configService.get<string>(
       'NSG_ORGANIZATION_ID',
       'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
@@ -39,6 +45,10 @@ export class GhwService {
     this.citizenScienceOrganizationId = this.configService.get<string>(
       'CITIZEN_SCIENCE_ORGANIZATION_ID',
       'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+    );
+    this.magneticArchOrganizationId = this.configService.get<string>(
+      'MAGNETIC_ARCH_ORGANIZATION_ID',
+      'dddddddd-dddd-4ddd-8ddd-dddddddddddd',
     );
   }
 
@@ -51,6 +61,12 @@ export class GhwService {
       this.citizenScienceBaseUrl
     ) {
       return this.citizenScienceBaseUrl;
+    }
+    if (
+      organizationId === this.magneticArchOrganizationId &&
+      this.magneticArchBaseUrl
+    ) {
+      return this.magneticArchBaseUrl;
     }
     return this.defaultBaseUrl;
   }

@@ -33,6 +33,8 @@ import { DemoArtifactEditEntity } from './demo/entities/demo-artifact-edit.entit
 import { CreateUsrse26Demo1720000005000 } from './migrations/1720000005000-create-usrse26-demo';
 import { RestoreDemoArtifactPortal1720000006000 } from './migrations/1720000006000-restore-demo-artifact-portal';
 import { AddDemoAccounts1720000007000 } from './migrations/1720000007000-add-demo-accounts';
+import { AddMagneticArchShowcase1720000008000 } from './migrations/1720000008000-add-magnetic-arch-showcase';
+import { ShowcaseModule } from './showcase/showcase.module';
 
 @Module({
   imports: [
@@ -108,6 +110,7 @@ import { AddDemoAccounts1720000007000 } from './migrations/1720000007000-add-dem
             CreateUsrse26Demo1720000005000,
             RestoreDemoArtifactPortal1720000006000,
             AddDemoAccounts1720000007000,
+            AddMagneticArchShowcase1720000008000,
           ],
           migrationsRun:
             configService.get<string>(
@@ -127,6 +130,7 @@ import { AddDemoAccounts1720000007000 } from './migrations/1720000007000-add-dem
     }),
     AuthModule,
     DemoModule,
+    ShowcaseModule,
   ],
   controllers: [AppController, HealthController],
   providers: [AppService],

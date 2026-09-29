@@ -48,6 +48,8 @@ describe('GhwService', () => {
                 GHW_NSG_URL: 'http://history-worker-nsg:8002',
                 GHW_CITIZEN_SCIENCE_URL:
                   'http://history-worker-citizen-science:8002',
+                GHW_MAGNETIC_ARCH_URL:
+                  'http://history-worker-magnetic-arch:8002',
               };
               return values[key] || defaultValue;
             }),
@@ -142,6 +144,41 @@ describe('GhwService', () => {
     const call = requestSpy.mock.calls[0][0];
     expect(call.hostname).toBe('history-worker-nsg');
     expect(call.path).toContain('assetType=workflow');
+  });
+
+  it('routes magnetic arch history to its own worker', async () => {
+    requestSpy.mockImplementation(
+      (options: any, cb: (res: http.IncomingMessage) => void) => {
+        const req = createFakeRequest();
+        process.nextTick(() =>
+          cb(createMockResponse(200, JSON.stringify({ items: [] }))),
+        );
+        process.nextTick(() => {
+          req.emit('socket', {
+            on: (event: string, handler: any) => {
+              if (event === 'connect') setImmediate(handler);
+            },
+          });
+        });
+        return req as any;
+      },
+    );
+
+    await service.fetchHistory(
+      {
+        artifactId: 'a',
+        organizationId: 'dddddddd-dddd-4ddd-8ddd-dddddddddddd',
+        offset: 0,
+        limit: 10,
+        order: 'desc',
+        includeValue: false,
+      },
+      'corr-magnetic',
+    );
+
+    expect(requestSpy.mock.calls[0][0].hostname).toBe(
+      'history-worker-magnetic-arch',
+    );
   });
 
   it('maps non-2xx status to error with statusCode', async () => {

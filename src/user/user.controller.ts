@@ -89,9 +89,8 @@ export class UserController {
     return this.authService.logout(token);
   }
 
-  @UseGuards(JwtAuthGuard, RolesGuard)
+  @UseGuards(JwtAuthGuard)
   @Post('register')
-  @Roles(Role.ADMIN, Role.PI)
   async create(
     @Body() createUserDto: UserCreateDto,
     @User() creator: UserEntity,

@@ -10,6 +10,31 @@ export class ShowcaseController {
     return this.showcase.list();
   }
 
+  @Get('examples')
+  examples() {
+    return this.showcase.examples();
+  }
+
+  @Get('examples/:key/artifacts/:id')
+  exampleArtifact(@Param('key') key: string, @Param('id') id: string) {
+    return this.showcase.exampleArtifact(key, id);
+  }
+
+  @Get('examples/:key/workflows/:id')
+  exampleWorkflow(@Param('key') key: string, @Param('id') id: string) {
+    return this.showcase.exampleWorkflow(key, id);
+  }
+
+  @Get('examples/:key/artifacts/:id/history')
+  exampleArtifactHistory(@Param('key') key: string, @Param('id') id: string) {
+    return this.showcase.exampleHistory(key, 'artifact', id);
+  }
+
+  @Get('examples/:key/workflows/:id/history')
+  exampleWorkflowHistory(@Param('key') key: string, @Param('id') id: string) {
+    return this.showcase.exampleHistory(key, 'workflow', id);
+  }
+
   @Get('artifacts/:id')
   artifact(@Param('id') id: string) {
     return this.showcase.artifact(id);

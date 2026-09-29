@@ -5,6 +5,7 @@ import { ShowcaseService } from './showcase.service';
 import {
   MAGNETIC_ARCH_MARKER,
   MAGNETIC_ARCH_ORGANIZATION_ID,
+  RESEARCH_EXAMPLES,
 } from './showcase.constants';
 
 const artifactId = '11111111-1111-4111-8111-111111111111';
@@ -232,5 +233,64 @@ describe('ShowcaseService', () => {
     artifacts.findOne.mockResolvedValueOnce(null);
     const result = await service.workflow(workflowId);
     expect(result.artifactIds).toEqual([]);
+  });
+
+  it('isolates each public catalog to its fixed curator and organization', async () => {
+    const eeg = RESEARCH_EXAMPLES[1];
+    const source = artifact({
+      title: 'EEG Eye State - original recording',
+      submitterUsername: eeg.curatorUsername,
+      keywords: [eeg.marker, 'EEG'],
+      manifest: [{ filename: 'EEG Eye State.arff', hash, algorithm: 'sha256' }],
+    });
+    artifacts.find.mockImplementation(async ({ where }) =>
+      where.organization.id === eeg.organizationId
+        ? [source, artifact({ id: 'other', keywords: [eeg.marker] })]
+        : [],
+    );
+    workflows.find.mockImplementation(async ({ where }) =>
+      where.organization.id === eeg.organizationId
+        ? [
+            workflow({
+              keywords: [eeg.marker],
+              submitterUsername: eeg.curatorUsername,
+              artifacts: [source],
+            }),
+          ]
+        : [],
+    );
+
+    const result = await service.examples();
+    expect(result.examples).toHaveLength(3);
+    expect(result.examples[1].ready).toBe(true);
+    expect(result.examples[1].artifacts).toHaveLength(1);
+    expect(result.examples[1].artifacts[0].manifest[0]).toMatchObject({
+      probe: null,
+      angleDegrees: null,
+    });
+    expect(JSON.stringify(result)).not.toContain('private@example.test');
+    expect(JSON.stringify(result)).not.toContain(eeg.marker);
+  });
+
+  it('rejects an artifact tagged for the example but submitted by another account', async () => {
+    const eeg = RESEARCH_EXAMPLES[1];
+    artifacts.findOne.mockResolvedValue(artifact({ keywords: [eeg.marker] }));
+    await expect(
+      service.exampleArtifact(eeg.key, artifactId),
+    ).rejects.toBeInstanceOf(NotFoundException);
+    expect(artifacts.findOne).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          organization: { id: eeg.organizationId },
+        }),
+      }),
+    );
+  });
+
+  it('rejects unknown example keys before querying records', async () => {
+    await expect(
+      service.exampleArtifact('unknown', artifactId),
+    ).rejects.toBeInstanceOf(NotFoundException);
+    expect(artifacts.findOne).not.toHaveBeenCalled();
   });
 });

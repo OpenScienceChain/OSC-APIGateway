@@ -13,17 +13,18 @@ import { GhwService } from '../artifact/ghw.service';
 import { RecordVisibility } from '../shared/enums/record-visibility.enum';
 import { WorkflowEntity } from '../workflow/workflow.entity';
 import {
-  MAGNETIC_ARCH_MARKER,
-  MAGNETIC_ARCH_ORGANIZATION_ID,
-  MAGNETIC_ARCH_ORGANIZATION_SLUG,
   MAGNETIC_ARCH_SOURCE,
+  RESEARCH_EXAMPLES,
+  ResearchExampleConfig,
 } from './showcase.constants';
 
 type ShowcaseAssetType = 'artifact' | 'workflow';
 type ShowcaseMeasurement = ManifestItem & {
-  probe: 'RPA' | 'FC';
+  probe: 'RPA' | 'FC' | null;
   angleDegrees: number | null;
 };
+
+const magneticExample = RESEARCH_EXAMPLES[0];
 
 @Injectable()
 export class ShowcaseService {
@@ -35,10 +36,15 @@ export class ShowcaseService {
     private readonly historyWorker: GhwService,
   ) {}
 
-  private isCurated(record: { keywords?: string[] }): boolean {
+  private isCurated(
+    record: { keywords?: string[]; submitterUsername?: string },
+    example: ResearchExampleConfig = magneticExample,
+  ): boolean {
     return (
       Array.isArray(record.keywords) &&
-      record.keywords.includes(MAGNETIC_ARCH_MARKER)
+      record.keywords.includes(example.marker) &&
+      (!example.curatorUsername ||
+        record.submitterUsername === example.curatorUsername)
     );
   }
 
@@ -53,13 +59,16 @@ export class ShowcaseService {
     );
   }
 
-  private publicManifest(manifest: ManifestItem[]): ShowcaseMeasurement[] {
+  private publicManifest(
+    manifest: ManifestItem[],
+    example: ResearchExampleConfig = magneticExample,
+  ): ShowcaseMeasurement[] {
     if (!Array.isArray(manifest)) return [];
     return manifest.flatMap((entry) => {
       if (
         !entry ||
         typeof entry.filename !== 'string' ||
-        !/^[A-Za-z0-9_.-]{1,100}\.(?:csv|txt)$/i.test(entry.filename) ||
+        !/^[A-Za-z0-9_ .-]{1,100}\.(?:csv|txt|arff)$/i.test(entry.filename) ||
         typeof entry.hash !== 'string' ||
         !/^[a-f0-9]{64}$/.test(entry.hash) ||
         entry.algorithm?.toLowerCase() !== 'sha256'
@@ -71,19 +80,28 @@ export class ShowcaseService {
           filename: entry.filename,
           hash: entry.hash,
           algorithm: 'sha256',
-          probe: entry.filename.endsWith('_FC.txt') ? 'FC' : 'RPA',
-          angleDegrees: angle ? Number(angle[1]) : null,
+          probe:
+            example.key === 'magnetic-arch'
+              ? entry.filename.endsWith('_FC.txt')
+                ? 'FC'
+                : 'RPA'
+              : null,
+          angleDegrees:
+            example.key === 'magnetic-arch' && angle ? Number(angle[1]) : null,
         },
       ];
     });
   }
 
-  private artifactShape(artifact: ArtifactEntity) {
+  private artifactShape(
+    artifact: ArtifactEntity,
+    example: ResearchExampleConfig = magneticExample,
+  ) {
     return {
       id: artifact.id,
       title: artifact.title,
       description: artifact.description,
-      organizationSlug: MAGNETIC_ARCH_ORGANIZATION_SLUG,
+      organizationSlug: example.organizationSlug,
       submissionState: artifact.submissionState,
       submittedAt: artifact.submittedAt,
       updatedAt: artifact.updatedAt,
@@ -93,9 +111,9 @@ export class ShowcaseService {
       footprint: /^[a-f0-9]{64}$/.test(artifact.footprint || '')
         ? artifact.footprint
         : null,
-      manifest: this.publicManifest(artifact.manifest),
+      manifest: this.publicManifest(artifact.manifest, example),
       keywords: (artifact.keywords || []).filter(
-        (keyword) => keyword !== MAGNETIC_ARCH_MARKER,
+        (keyword) => keyword !== example.marker,
       ),
       links: artifact.links || [],
       dois: artifact.dois || [],
@@ -105,12 +123,16 @@ export class ShowcaseService {
     };
   }
 
-  private workflowShape(workflow: WorkflowEntity, artifactIds: string[]) {
+  private workflowShape(
+    workflow: WorkflowEntity,
+    artifactIds: string[],
+    example: ResearchExampleConfig = magneticExample,
+  ) {
     return {
       id: workflow.id,
       title: workflow.title,
       description: workflow.description,
-      organizationSlug: MAGNETIC_ARCH_ORGANIZATION_SLUG,
+      organizationSlug: example.organizationSlug,
       submissionState: workflow.submissionState,
       submittedAt: workflow.submittedAt,
       updatedAt: workflow.updatedAt,
@@ -119,7 +141,7 @@ export class ShowcaseService {
         : null,
       artifactIds,
       keywords: (workflow.keywords || []).filter(
-        (keyword) => keyword !== MAGNETIC_ARCH_MARKER,
+        (keyword) => keyword !== example.marker,
       ),
       submissionComment: workflow.submission_comment,
     };
@@ -135,43 +157,67 @@ export class ShowcaseService {
     }
   }
 
-  private async artifactRecord(id: string): Promise<ArtifactEntity> {
+  private exampleFor(key: string): ResearchExampleConfig {
+    const example = RESEARCH_EXAMPLES.find((item) => item.key === key);
+    if (!example) throw new NotFoundException('Research example not found');
+    return example;
+  }
+
+  private async artifactRecord(
+    id: string,
+    example: ResearchExampleConfig = magneticExample,
+  ): Promise<ArtifactEntity> {
     this.assertId(id);
     const record = await this.artifacts.findOne({
       where: {
         id,
-        organization: { id: MAGNETIC_ARCH_ORGANIZATION_ID },
+        organization: { id: example.organizationId },
         visibility: RecordVisibility.PUBLIC,
         archivedAt: IsNull(),
       },
     });
-    if (!record || !this.isCurated(record)) {
+    if (!record || !this.isCurated(record, example)) {
       throw new NotFoundException('Showcase artifact not found');
     }
     return record;
   }
 
-  private async workflowRecord(id: string): Promise<WorkflowEntity> {
+  private async workflowRecord(
+    id: string,
+    example: ResearchExampleConfig = magneticExample,
+  ): Promise<WorkflowEntity> {
     this.assertId(id);
     const record = await this.workflows.findOne({
       where: {
         id,
-        organization: { id: MAGNETIC_ARCH_ORGANIZATION_ID },
+        organization: { id: example.organizationId },
         visibility: RecordVisibility.PUBLIC,
       },
       relations: { artifacts: true },
     });
-    if (!record || !this.isCurated(record)) {
+    if (!record || !this.isCurated(record, example)) {
       throw new NotFoundException('Showcase workflow not found');
     }
     return record;
   }
 
   async list() {
+    return this.catalogFor(magneticExample);
+  }
+
+  async examples() {
+    return {
+      examples: await Promise.all(
+        RESEARCH_EXAMPLES.map((example) => this.catalogFor(example)),
+      ),
+    };
+  }
+
+  private async catalogFor(example: ResearchExampleConfig) {
     const [artifacts, workflows] = await Promise.all([
       this.artifacts.find({
         where: {
-          organization: { id: MAGNETIC_ARCH_ORGANIZATION_ID },
+          organization: { id: example.organizationId },
           visibility: RecordVisibility.PUBLIC,
           archivedAt: IsNull(),
         },
@@ -179,7 +225,7 @@ export class ShowcaseService {
       }),
       this.workflows.find({
         where: {
-          organization: { id: MAGNETIC_ARCH_ORGANIZATION_ID },
+          organization: { id: example.organizationId },
           visibility: RecordVisibility.PUBLIC,
         },
         relations: { artifacts: true },
@@ -187,7 +233,7 @@ export class ShowcaseService {
       }),
     ]);
     const curatedArtifacts = artifacts.filter((artifact) =>
-      this.isCurated(artifact),
+      this.isCurated(artifact, example),
     );
     const confirmedIds = new Set(
       curatedArtifacts
@@ -195,20 +241,24 @@ export class ShowcaseService {
         .map((artifact) => artifact.id),
     );
     const curatedWorkflows = workflows.filter((workflow) =>
-      this.isCurated(workflow),
+      this.isCurated(workflow, example),
     );
     const confirmedWorkflow = curatedWorkflows.some(
       (workflow) =>
         this.isConfirmed(workflow) &&
-        workflow.artifacts?.length === 5 &&
+        workflow.artifacts?.length === example.expectedArtifactCount &&
         workflow.artifacts.every((artifact) => confirmedIds.has(artifact.id)),
     );
     return {
-      organization: 'Magnetic Arch Plasma Showcase',
-      source: MAGNETIC_ARCH_SOURCE,
-      ready: confirmedIds.size === 5 && confirmedWorkflow,
+      key: example.key,
+      organization: example.organization,
+      summary: example.summary,
+      source: example.source,
+      ready:
+        confirmedIds.size === example.expectedArtifactCount &&
+        confirmedWorkflow,
       artifacts: curatedArtifacts.map((artifact) =>
-        this.artifactShape(artifact),
+        this.artifactShape(artifact, example),
       ),
       workflows: curatedWorkflows.map((workflow) =>
         this.workflowShape(
@@ -218,6 +268,7 @@ export class ShowcaseService {
             .filter((id) =>
               curatedArtifacts.some((artifact) => artifact.id === id),
             ),
+          example,
         ),
       ),
     };
@@ -227,6 +278,39 @@ export class ShowcaseService {
     return {
       source: MAGNETIC_ARCH_SOURCE,
       ...this.artifactShape(await this.artifactRecord(id)),
+    };
+  }
+
+  async exampleArtifact(key: string, id: string) {
+    const example = this.exampleFor(key);
+    return {
+      source: example.source,
+      ...this.artifactShape(await this.artifactRecord(id, example), example),
+    };
+  }
+
+  async exampleWorkflow(key: string, id: string) {
+    const example = this.exampleFor(key);
+    const record = await this.workflowRecord(id, example);
+    const linked = await Promise.all(
+      (record.artifacts || []).map(async (artifact) => {
+        try {
+          return await this.artifactRecord(artifact.id, example);
+        } catch (error) {
+          if (!(error instanceof NotFoundException)) throw error;
+          return null;
+        }
+      }),
+    );
+    return {
+      source: example.source,
+      ...this.workflowShape(
+        record,
+        linked
+          .filter((artifact) => artifact !== null)
+          .map((artifact) => artifact.id),
+        example,
+      ),
     };
   }
 
@@ -252,10 +336,22 @@ export class ShowcaseService {
   }
 
   async history(type: ShowcaseAssetType, id: string) {
+    return this.historyFor(magneticExample, type, id);
+  }
+
+  async exampleHistory(key: string, type: ShowcaseAssetType, id: string) {
+    return this.historyFor(this.exampleFor(key), type, id);
+  }
+
+  private async historyFor(
+    example: ResearchExampleConfig,
+    type: ShowcaseAssetType,
+    id: string,
+  ) {
     const record =
       type === 'artifact'
-        ? await this.artifactRecord(id)
-        : await this.workflowRecord(id);
+        ? await this.artifactRecord(id, example)
+        : await this.workflowRecord(id, example);
     if (!this.isConfirmed(record)) {
       throw new ServiceUnavailableException(
         'Ledger confirmation is not available',
@@ -267,13 +363,13 @@ export class ShowcaseService {
             (
               await this.artifacts.find({
                 where: {
-                  organization: { id: MAGNETIC_ARCH_ORGANIZATION_ID },
+                  organization: { id: example.organizationId },
                   visibility: RecordVisibility.PUBLIC,
                   archivedAt: IsNull(),
                 },
               })
             )
-              .filter((artifact) => this.isCurated(artifact))
+              .filter((artifact) => this.isCurated(artifact, example))
               .map((artifact) => artifact.id.toLowerCase()),
           )
         : null;
@@ -283,7 +379,7 @@ export class ShowcaseService {
         {
           artifactId: id.toLowerCase(),
           assetType: type,
-          organizationId: MAGNETIC_ARCH_ORGANIZATION_ID,
+          organizationId: example.organizationId,
           offset: 0,
           limit: 100,
           order: 'desc',
@@ -320,7 +416,7 @@ export class ShowcaseService {
               /^[a-f0-9]{64}$/.test(payload.footprint)
                 ? { footprint: payload.footprint }
                 : {}),
-              manifest: this.publicManifest(payload?.manifest),
+              manifest: this.publicManifest(payload?.manifest, example),
             }
           : {
               artifactIds: Array.isArray(payload?.artifactIds)
@@ -331,7 +427,7 @@ export class ShowcaseService {
                         /^[a-f0-9-]{36}$/i.test(value) &&
                         visibleArtifactIds?.has(value.toLowerCase()),
                     )
-                    .slice(0, 5)
+                    .slice(0, example.expectedArtifactCount)
                 : [],
             };
       return [

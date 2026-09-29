@@ -1,5 +1,6 @@
 import {
   ArrayMaxSize,
+  ArrayMinSize,
   IsArray,
   IsInt,
   IsOptional,
@@ -11,8 +12,11 @@ import {
   Max,
   MaxLength,
   Min,
+  ValidateNested,
 } from 'class-validator';
+import { Type } from 'class-transformer';
 import { DEMO_MAX_FILE_BYTES } from '../demo.constants';
+import { DemoFileEntryDto } from './demo-file-entry.dto';
 
 export class UpdateDemoArtifactDto {
   @IsUUID('4')
@@ -67,4 +71,12 @@ export class UpdateDemoArtifactDto {
   @IsOptional()
   @Matches(/^[a-z0-9]{1,12}$/)
   extension?: string;
+
+  @IsOptional()
+  @IsArray()
+  @ArrayMinSize(2)
+  @ArrayMaxSize(50)
+  @ValidateNested({ each: true })
+  @Type(() => DemoFileEntryDto)
+  files?: DemoFileEntryDto[];
 }

@@ -22,6 +22,7 @@ import {
 } from 'crypto';
 import { Between, DataSource, In, IsNull, LessThan, Repository } from 'typeorm';
 import { ArtifactEntity } from '../artifact/artifact.entity';
+import { ManifestItem } from '../artifact/artifact.entity';
 import { ArtifactService } from '../artifact/artifact.service';
 import { UpdateArtifactUserDto } from '../artifact/dto/update-artifact-user.dto';
 import { SubmissionState } from '../artifact/enums/submission-state.enum';
@@ -72,6 +73,7 @@ import {
   DemoTokenPayload,
 } from './demo.types';
 import { UpdateDemoArtifactDto } from './dto/update-demo-artifact.dto';
+import { DemoFileEntryDto } from './dto/demo-file-entry.dto';
 import { DEMO_MAX_FILE_BYTES } from './demo.constants';
 
 type ReservationOutcome = 'reserved' | 'session-limit' | 'global-limit';
@@ -138,6 +140,63 @@ export class DemoService {
 
   private artifactPayloadHash(payload: unknown): string {
     return createHash('sha256').update(JSON.stringify(payload)).digest('hex');
+  }
+
+  private validateFiles(
+    fingerprint: string,
+    sizeBytes: number,
+    extension: string,
+    files?: DemoFileEntryDto[],
+  ): void {
+    if (!files) {
+      if (extension === 'bundle')
+        throw new BadRequestException('A bundle requires its file hashes');
+      return;
+    }
+    if (extension !== 'bundle' || files.length < 2 || files.length > 50)
+      throw new BadRequestException('Invalid folder manifest');
+    if (files.some((file) => !DEMO_FILE_EXTENSIONS.has(file.extension) || file.extension === 'bundle'))
+      throw new BadRequestException('A folder contains an unsupported file');
+    if (files.reduce((sum, file) => sum + file.sizeBytes, 0) !== sizeBytes)
+      throw new BadRequestException('Folder size does not match its files');
+    const canonical = files
+      .map((file, index) => `${index + 1}\t${file.extension}\t${file.hash}\t${file.sizeBytes}`)
+      .join('\n');
+    if (createHash('sha256').update(canonical).digest('hex') !== fingerprint)
+      throw new BadRequestException('Folder footprint does not match its files');
+  }
+
+  private manifestFor(
+    recordId: string,
+    fingerprint: string,
+    extension: string,
+    files?: DemoFileEntryDto[],
+  ): ManifestItem[] {
+    return files?.map((file, index) => ({
+      hash: file.hash,
+      filename: `demo-artifact-${recordId}-${String(index + 1).padStart(4, '0')}.${file.extension}`,
+      algorithm: 'sha256',
+    })) || [{
+      hash: fingerprint,
+      filename: `demo-artifact-${recordId}.${extension}`,
+      algorithm: 'sha256',
+    }];
+  }
+
+  private publicManifest(recordId: string, value: unknown): ManifestItem[] | undefined {
+    if (!Array.isArray(value) || value.length < 1 || value.length > 50) return;
+    const pattern = new RegExp(`^demo-artifact-${recordId}(?:-\\d{4})?\\.[a-z0-9]{1,12}$`);
+    if (!value.every((entry) =>
+      entry && typeof entry === 'object' &&
+      typeof entry.filename === 'string' && pattern.test(entry.filename) &&
+      typeof entry.hash === 'string' && /^[a-f0-9]{64}$/.test(entry.hash) &&
+      entry.algorithm === 'sha256',
+    )) return;
+    return value.map((entry) => ({
+      filename: entry.filename,
+      hash: entry.hash,
+      algorithm: 'sha256',
+    }));
   }
 
   private normalizeArtifactText(value: string, name: string): string {
@@ -526,8 +585,20 @@ export class DemoService {
     };
     if (contribution.recordType === DemoContributionType.ARTIFACT) {
       const artifact = record as ArtifactEntity;
+      const confirmed = artifact.submissionState === SubmissionState.SUCCESS && !!artifact.blockchainTxId;
+      const latestEdit = confirmed ? await this.artifactEdits.findOne({
+        where: { recordId: record.id },
+        order: { editNumber: 'DESC' },
+      }) : null;
+      const manifestConfirmed = confirmed && (!latestEdit || latestEdit.baselineTxId !== artifact.blockchainTxId);
+      const manifest = manifestConfirmed ? this.publicManifest(record.id, artifact.manifest) : undefined;
       return {
         ...common,
+        ...(manifest ? { manifest } : {}),
+        ...(manifestConfirmed && typeof artifact.footprint === 'string' && /^[a-f0-9]{64}$/.test(artifact.footprint)
+          ? { footprint: artifact.footprint }
+          : {}),
+        lastUpdatedAt: artifact.updatedAt || artifact.submittedAt,
         verified: artifact.verified,
         keywords: artifact.keywords.filter(
           (keyword) =>
@@ -729,6 +800,16 @@ export class DemoService {
           const snapshot =
             recordType === DemoContributionType.ARTIFACT
               ? {
+                  ...(this.publicManifest(recordId, ledgerPayload?.manifest)
+                    ? { manifest: this.publicManifest(recordId, ledgerPayload?.manifest) }
+                    : {}),
+                  ...(typeof ledgerPayload?.footprint === 'string' &&
+                  /^[a-f0-9]{64}$/.test(ledgerPayload.footprint)
+                    ? { footprint: ledgerPayload.footprint }
+                    : {}),
+                  ...(ledgerPayload && validString(txId) && validString(timestamp)
+                    ? { submissionState: SubmissionState.SUCCESS }
+                    : {}),
                   ...(safeText('title', 200) !== undefined
                     ? { title: safeText('title', 200) }
                     : {}),
@@ -1133,7 +1214,6 @@ export class DemoService {
     dto: CreateDemoArtifactDto,
     correlationId?: string,
   ) {
-    const manifestName = `demo-artifact-${recordId}.${dto.extension}`;
     const payload = this.createArtifactPayload(dto);
     try {
       return await this.artifactService.create(
@@ -1150,13 +1230,7 @@ export class DemoService {
           dois: payload.dois,
           fundingAgencies: payload.fundingAgencies,
           acknowledgements: payload.acknowledgements,
-          manifest: [
-            {
-              hash: dto.fingerprint,
-              filename: manifestName,
-              algorithm: 'sha256',
-            },
-          ],
+          manifest: this.manifestFor(recordId, dto.fingerprint, dto.extension, dto.files),
           footprint: dto.fingerprint,
           submission_comment: payload.submissionComment,
         },
@@ -1320,6 +1394,7 @@ export class DemoService {
     correlationId?: string,
   ) {
     const payload = this.createArtifactPayload(dto);
+    this.validateFiles(dto.fingerprint, dto.sizeBytes, dto.extension, dto.files);
     const payloadHash = this.artifactPayloadHash(payload);
     if (!DEMO_FILE_EXTENSIONS.has(dto.extension)) {
       throw new BadRequestException(
@@ -1427,6 +1502,10 @@ export class DemoService {
     if (dto.sizeBytes && dto.sizeBytes > DEMO_MAX_FILE_BYTES) {
       throw new BadRequestException('The selected file exceeds the demo limit');
     }
+    if (dto.files && replacement.some((value) => value === undefined))
+      throw new BadRequestException('A replacement folder requires fingerprint, size, and extension');
+    if (dto.fingerprint && dto.sizeBytes && dto.extension)
+      this.validateFiles(dto.fingerprint, dto.sizeBytes, dto.extension, dto.files);
     if (
       ![
         dto.keywords,
@@ -1473,6 +1552,7 @@ export class DemoService {
             fingerprint: dto.fingerprint,
             sizeBytes: dto.sizeBytes!,
             extension: dto.extension!,
+            ...(dto.files ? { files: dto.files } : {}),
           }
         : {}),
     };
@@ -1546,9 +1626,9 @@ export class DemoService {
           keyword !== 'usrse26-demo' &&
           keyword !== contribution.researchContext?.toLowerCase(),
       );
-      const currentExtension = artifact.manifest?.[0]?.filename
-        ?.split('.')
-        .pop();
+      const currentExtension = artifact.manifest?.length > 1
+        ? 'bundle'
+        : artifact.manifest?.[0]?.filename?.split('.').pop();
       const changed =
         (payload.keywords !== undefined &&
           !sameList(payload.keywords, currentKeywords)) ||
@@ -1636,13 +1716,7 @@ export class DemoService {
       ...(payload.fingerprint !== undefined
         ? {
             footprint: payload.fingerprint,
-            manifest: [
-              {
-                hash: payload.fingerprint,
-                filename: `demo-artifact-${recordId}.${payload.extension}`,
-                algorithm: 'sha256',
-              },
-            ],
+            manifest: this.manifestFor(recordId, payload.fingerprint, payload.extension, payload.files),
           }
         : {}),
     };
@@ -1852,11 +1926,13 @@ export class DemoService {
       contributorAlias: artifact.submitterUsername,
       fingerprint: artifact.footprint,
       manifestName: artifact.manifest[0]?.filename,
+      manifest: this.publicManifest(recordId, artifact.manifest),
       verified: artifact.verified,
       submissionState: artifact.submissionState,
       blockchainTxId: artifact.blockchainTxId,
       submissionError: artifact.submissionError,
       submittedAt: artifact.submittedAt,
+      lastUpdatedAt: artifact.updatedAt || artifact.submittedAt,
     };
   }
 

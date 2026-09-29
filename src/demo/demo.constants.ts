@@ -32,4 +32,5 @@ export const DEMO_FILE_EXTENSIONS = new Set([
   'txt',
   'yaml',
   'yml',
+  'bundle',
 ]);

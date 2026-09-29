@@ -8,7 +8,7 @@ import { ConfigService } from '@nestjs/config';
 import { JwtModule } from '@nestjs/jwt';
 import { Test } from '@nestjs/testing';
 import { getRepositoryToken, TypeOrmModule } from '@nestjs/typeorm';
-import { randomUUID } from 'crypto';
+import { createHash, randomUUID } from 'crypto';
 import * as request from 'supertest';
 import { DataSource, In, Repository } from 'typeorm';
 import { ArtifactEntity } from '../artifact/artifact.entity';
@@ -774,6 +774,7 @@ describe('US-RSE 2026 demonstration contract', () => {
               'researchContext',
               'submissionState',
               'submittedAt',
+              'lastUpdatedAt',
               'verified',
               'keywords',
               'links',
@@ -782,6 +783,8 @@ describe('US-RSE 2026 demonstration contract', () => {
               'acknowledgements',
               'submissionComment',
               'blockchainTxId',
+              'manifest',
+              'footprint',
             ]
           : [
               'id',
@@ -801,8 +804,13 @@ describe('US-RSE 2026 demonstration contract', () => {
         ).sort(),
       );
       expect(Object.keys(detail.body).join(',')).not.toMatch(
-        /fingerprint|manifest|filename|email|session|footprint|submissionError/i,
+        /fingerprint|email|session|submissionError/i,
       );
+      if (type === 'artifacts') {
+        expect(detail.body.manifest).toEqual(artifact.body.manifest);
+        expect(detail.body.footprint).toBe(artifact.body.fingerprint);
+        expect(JSON.stringify(detail.body)).not.toMatch(/guest-[a-f0-9]+@demo\.invalid|original-private-name/i);
+      }
       const pendingHistory = await request(app.getHttpServer())
         .get(`${base}/public/${type}/${id}/history`)
         .expect(200);
@@ -1723,6 +1731,7 @@ describe('US-RSE 2026 demonstration contract', () => {
         isDelete: false,
         revision: 2,
         snapshot: {
+          submissionState: 'SUCCESS',
           title: 'Version two',
           keywords: ['second'],
           submissionComment: 'Public second revision',
@@ -1733,7 +1742,7 @@ describe('US-RSE 2026 demonstration contract', () => {
         timestamp: '2026-09-26T01:00:00Z',
         isDelete: false,
         revision: 1,
-        snapshot: { title: 'Version one', keywords: ['first'] },
+        snapshot: { submissionState: 'SUCCESS', title: 'Version one', keywords: ['first'] },
       },
     ]);
     expect(JSON.stringify(response.body)).not.toMatch(
@@ -1744,5 +1753,79 @@ describe('US-RSE 2026 demonstration contract', () => {
       .set('Cookie', guest.cookie)
       .expect(200);
     expect(owned.body).toEqual(response.body);
+  });
+
+  it('records bounded folder hashes and publishes generated manifest data without opening guarded writes', async () => {
+    const owner = await createGuest();
+    const other = await createGuest();
+    const files = [
+      { hash: 'a'.repeat(64), sizeBytes: 17, extension: 'csv' },
+      { hash: 'b'.repeat(64), sizeBytes: 23, extension: 'json' },
+    ];
+    const canonical = files.map((file, index) =>
+      `${index + 1}\t${file.extension}\t${file.hash}\t${file.sizeBytes}`,
+    ).join('\n');
+    const fingerprint = createHash('sha256').update(canonical).digest('hex');
+    const body = { ...artifactBody(), fingerprint, sizeBytes: 40, extension: 'bundle', files };
+    await mutate(owner).artifact({ ...body, sizeBytes: 41 }).expect(400);
+    await mutate(owner).artifact({ ...body, fingerprint: 'c'.repeat(64) }).expect(400);
+    const created = await mutate(owner).artifact(body).expect(201);
+    const id = created.body.id;
+    expect(created.body.manifest).toEqual([
+      { filename: `demo-artifact-${id}-0001.csv`, hash: files[0].hash, algorithm: 'sha256' },
+      { filename: `demo-artifact-${id}-0002.json`, hash: files[1].hash, algorithm: 'sha256' },
+    ]);
+    await confirmArtifact(id);
+    await mutate(owner).updateArtifact(id, {
+      requestId: randomUUID(),
+      submissionComment: 'The same folder must not create a new ledger revision.',
+      fingerprint,
+      sizeBytes: 40,
+      extension: 'bundle',
+      files,
+    }).expect(400);
+    (ghwService.fetchHistory as jest.Mock).mockResolvedValue({
+      items: [{ txId: 'folder-tx', timestamp: '2026-09-28T00:00:00Z', record: {
+        revision: 1, payload: { title: body.title, manifest: created.body.manifest, footprint: fingerprint },
+      } }],
+      count: 1,
+    });
+    const publicHistory = await request(app.getHttpServer())
+      .get(`/api/v1/demo/public/artifacts/${id}/history`).expect(200);
+    expect(publicHistory.body.items[0].snapshot.manifest).toEqual(created.body.manifest);
+    expect(publicHistory.body.items[0].snapshot.footprint).toBe(fingerprint);
+    expect(publicHistory.body.items[0].snapshot.submissionState).toBe('SUCCESS');
+    expect(JSON.stringify(publicHistory.body)).not.toMatch(/guest-[a-f0-9]+@demo\.invalid|session|original-private-name/i);
+    const publicDetail = await request(app.getHttpServer())
+      .get(`/api/v1/demo/public/artifacts/${id}`).expect(200);
+    expect(publicDetail.body.manifest).toEqual(created.body.manifest);
+    expect(publicDetail.body.footprint).toBe(fingerprint);
+    await request(app.getHttpServer()).get(`/api/v1/demo/artifacts/${id}/history`)
+      .set('Cookie', other.cookie).expect(403);
+    const ownerHistory = await request(app.getHttpServer())
+      .get(`/api/v1/demo/artifacts/${id}/history`).set('Cookie', owner.cookie).expect(200);
+    expect(ownerHistory.body.items[0].snapshot.manifest).toEqual(created.body.manifest);
+    expect(ownerHistory.body.items[0].snapshot.footprint).toBe(fingerprint);
+    expect(ownerHistory.body).toEqual(publicHistory.body);
+    const replacementFiles = [{ ...files[0], hash: 'c'.repeat(64) }, files[1]];
+    const replacementCanonical = replacementFiles.map((file, index) =>
+      `${index + 1}\t${file.extension}\t${file.hash}\t${file.sizeBytes}`,
+    ).join('\n');
+    const replacementFootprint = createHash('sha256').update(replacementCanonical).digest('hex');
+    const replaced = await mutate(owner).updateArtifact(id, {
+      requestId: randomUUID(),
+      submissionComment: 'A changed folder creates a new pending revision.',
+      fingerprint: replacementFootprint,
+      sizeBytes: 40,
+      extension: 'bundle',
+      files: replacementFiles,
+    }).expect(200);
+    expect(replaced.body.manifest[0].hash).toBe('c'.repeat(64));
+    expect(replaced.body.fingerprint).toBe(replacementFootprint);
+    const pendingDetail = await request(app.getHttpServer())
+      .get(`/api/v1/demo/public/artifacts/${id}`).expect(200);
+    expect(pendingDetail.body.manifest).toBeUndefined();
+    expect(pendingDetail.body.footprint).toBeUndefined();
+    expect(pendingDetail.body.blockchainTxId).toBe(`confirmed-${id}`);
   });
 });

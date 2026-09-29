@@ -1,5 +1,6 @@
 import {
   ArrayMaxSize,
+  ArrayMinSize,
   IsArray,
   IsEnum,
   IsInt,
@@ -12,9 +13,12 @@ import {
   Max,
   MaxLength,
   Min,
+  ValidateNested,
 } from 'class-validator';
+import { Type } from 'class-transformer';
 import { DEMO_MAX_FILE_BYTES } from '../demo.constants';
 import { DemoResearchContext } from '../demo.enums';
+import { DemoFileEntryDto } from './demo-file-entry.dto';
 
 export class CreateDemoArtifactDto {
   @IsUUID('4')
@@ -32,6 +36,14 @@ export class CreateDemoArtifactDto {
   @IsString()
   @Matches(/^[a-z0-9]{1,12}$/)
   extension: string;
+
+  @IsOptional()
+  @IsArray()
+  @ArrayMinSize(2)
+  @ArrayMaxSize(50)
+  @ValidateNested({ each: true })
+  @Type(() => DemoFileEntryDto)
+  files?: DemoFileEntryDto[];
 
   @IsEnum(DemoResearchContext)
   researchContext: DemoResearchContext;

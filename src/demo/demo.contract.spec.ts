@@ -33,6 +33,7 @@ import {
   DemoContributionType,
   DemoLifecycleState,
   DemoOrganizationSlug,
+  DemoResearchContext,
 } from './demo.enums';
 import { DemoContributionEntity } from './entities/demo-contribution.entity';
 import { DemoArtifactEditEntity } from './entities/demo-artifact-edit.entity';
@@ -739,6 +740,33 @@ describe('US-RSE 2026 demonstration contract', () => {
       acceptedWorkflows: 1,
       provenanceHistoryViews: 2,
     });
+  });
+
+  it('accepts other research output and explains failed ledger submission without leaking internals', async () => {
+    const owner = await createGuest();
+    const created = await mutate(owner)
+      .artifact({
+        ...artifactBody(),
+        researchContext: DemoResearchContext.OTHER,
+      })
+      .expect(201);
+    await dataSource.getRepository(ArtifactEntity).update(created.body.id, {
+      submissionState: SubmissionState.FAILED,
+      submissionError:
+        'HTTP 502 from bridge-nsg: peer0.org1.example.com:7051 unavailable',
+    });
+    const detail = await request(app.getHttpServer())
+      .get(`/api/v1/demo/public/artifacts/${created.body.id}`)
+      .expect(200);
+    expect(detail.body).toMatchObject({
+      researchContext: DemoResearchContext.OTHER,
+      submissionState: SubmissionState.FAILED,
+      failureReason:
+        'The blockchain network was unavailable during submission. No ledger confirmation was recorded.',
+    });
+    expect(JSON.stringify(detail.body)).not.toMatch(
+      /bridge-nsg|peer0|7051|submissionError/,
+    );
   });
 
   it('serves anonymous cross-org detail and metadata-only history while mine stays session-bound', async () => {

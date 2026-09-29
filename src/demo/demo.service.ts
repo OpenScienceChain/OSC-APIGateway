@@ -766,6 +766,16 @@ export class DemoService {
       researchContext: contribution.researchContext,
       submissionState: record.submissionState,
       submittedAt: record.submittedAt,
+      ...(record.submissionState === SubmissionState.FAILED
+        ? {
+            failureReason:
+              /HTTP 502 from bridge|UNAVAILABLE|Name resolution failed/i.test(
+                record.submissionError || '',
+              )
+                ? 'The blockchain network was unavailable during submission. No ledger confirmation was recorded.'
+                : 'Blockchain submission failed. No ledger confirmation was recorded.',
+          }
+        : {}),
       ...(record.submissionState === SubmissionState.SUCCESS &&
       record.blockchainTxId
         ? { blockchainTxId: record.blockchainTxId }

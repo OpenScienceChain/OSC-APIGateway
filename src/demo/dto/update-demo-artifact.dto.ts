@@ -15,7 +15,7 @@ import {
   ValidateNested,
 } from 'class-validator';
 import { Type } from 'class-transformer';
-import { DEMO_MAX_FILE_BYTES } from '../demo.constants';
+import { DEMO_MAX_FILE_BYTES, DEMO_MAX_FILE_COUNT } from '../demo.constants';
 import { DemoFileEntryDto } from './demo-file-entry.dto';
 
 export class UpdateDemoArtifactDto {
@@ -75,7 +75,7 @@ export class UpdateDemoArtifactDto {
   @IsOptional()
   @IsArray()
   @ArrayMinSize(2)
-  @ArrayMaxSize(50)
+  @ArrayMaxSize(DEMO_MAX_FILE_COUNT)
   @ValidateNested({ each: true })
   @Type(() => DemoFileEntryDto)
   files?: DemoFileEntryDto[];

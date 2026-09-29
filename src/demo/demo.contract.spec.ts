@@ -2126,4 +2126,67 @@ describe('US-RSE 2026 demonstration contract', () => {
     expect(pendingDetail.body.footprint).toBeUndefined();
     expect(pendingDetail.body.blockchainTxId).toBe(`confirmed-${id}`);
   });
+
+  it('accepts a 500-file, 50 MiB manifest and rejects either limit being exceeded', async () => {
+    const owner = await createGuest();
+    const files = Array.from({ length: 500 }, (_, index) => ({
+      hash: createHash('sha256').update(String(index)).digest('hex'),
+      sizeBytes: index < 400 ? 104858 : 104856,
+      extension: 'txt',
+    }));
+    const fingerprintFor = (entries: typeof files) =>
+      createHash('sha256')
+        .update(
+          entries
+            .map(
+              (file, index) =>
+                `${index + 1}\t${file.extension}\t${file.hash}\t${file.sizeBytes}`,
+            )
+            .join('\n'),
+        )
+        .digest('hex');
+    const body = {
+      ...artifactBody(),
+      fingerprint: fingerprintFor(files),
+      sizeBytes: 50 * 1024 * 1024,
+      extension: 'bundle',
+      files,
+    };
+    await mutate(owner)
+      .artifact({
+        ...body,
+        files: [...files, { ...files[0], sizeBytes: 1 }],
+      })
+      .expect(400);
+    await mutate(owner)
+      .artifact({ ...body, sizeBytes: body.sizeBytes + 1 })
+      .expect(400);
+
+    const created = await mutate(owner).artifact(body).expect(201);
+    expect(created.body.manifest).toHaveLength(500);
+    expect(created.body.manifest[499].filename).toBe(
+      `demo-artifact-${created.body.id}-0500.txt`,
+    );
+    await confirmArtifact(created.body.id);
+    const publicDetail = await request(app.getHttpServer())
+      .get(`/api/v1/demo/public/artifacts/${created.body.id}`)
+      .expect(200);
+    expect(publicDetail.body.manifest).toHaveLength(500);
+
+    const replacement = [
+      { ...files[0], hash: 'a'.repeat(64) },
+      ...files.slice(1),
+    ];
+    const revised = await mutate(owner)
+      .updateArtifact(created.body.id, {
+        requestId: randomUUID(),
+        submissionComment: 'A replacement manifest at the new file limit.',
+        fingerprint: fingerprintFor(replacement),
+        sizeBytes: body.sizeBytes,
+        extension: 'bundle',
+        files: replacement,
+      })
+      .expect(200);
+    expect(revised.body.manifest).toHaveLength(500);
+  }, 30000);
 });

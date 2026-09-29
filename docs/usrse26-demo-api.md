@@ -57,13 +57,14 @@ the organization and capability.
 ## Controlled contributions
 
 `POST /api/v1/demo/artifacts` accepts a client-generated UUID request ID,
-lowercase SHA-256 fingerprint, size from 1 byte through 10 MiB, allowlisted
+lowercase SHA-256 fingerprint, size from 1 byte through 50 MiB, allowlisted
 lowercase extension, one controlled research context, title (3–200 characters),
 description (50–3000), submission comment (20–1000), and bounded optional
 keywords, HTTPS links, DOIs, funding agencies, and acknowledgements. Free text
 is public and unmoderated. There is no field for file bytes or an original
 filename. The server binds organization and visibility, and generates a
-manifest name of the form `demo-artifact-<record UUID>.<extension>`.
+manifest name of the form `demo-artifact-<record UUID>.<extension>`. A bundle
+may contain 2-500 file hashes within the same 50 MiB aggregate limit.
 
 `PATCH /api/v1/demo/artifacts/:id` allows the contributing guest session to
 make at most two edits to a confirmed public artifact while the same run is

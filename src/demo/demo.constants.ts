@@ -7,7 +7,8 @@ export const DEMO_EVENT_WORKFLOW_LIMIT = 500;
 export const DEMO_SESSION_ARTIFACT_LIMIT = 3;
 export const DEMO_SESSION_WORKFLOW_LIMIT = 2;
 export const DEMO_FEEDBACK_COMMENT_LIMIT = 300;
-export const DEMO_MAX_FILE_BYTES = 10 * 1024 * 1024;
+export const DEMO_MAX_FILE_BYTES = 50 * 1024 * 1024;
+export const DEMO_MAX_FILE_COUNT = 500;
 export const DEMO_RETENTION_DAYS = 30;
 export const DEMO_SESSION_EVENT_LIMIT = 100;
 // Must permit the 1,000-artifact event ceiling to be reachable when each

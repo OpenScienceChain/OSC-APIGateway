@@ -34,6 +34,7 @@ import { CreateUsrse26Demo1720000005000 } from './migrations/1720000005000-creat
 import { RestoreDemoArtifactPortal1720000006000 } from './migrations/1720000006000-restore-demo-artifact-portal';
 import { AddDemoAccounts1720000007000 } from './migrations/1720000007000-add-demo-accounts';
 import { AddMagneticArchShowcase1720000008000 } from './migrations/1720000008000-add-magnetic-arch-showcase';
+import { IncreaseDemoFileLimits1720000009000 } from './migrations/1720000009000-increase-demo-file-limits';
 import { ShowcaseModule } from './showcase/showcase.module';
 
 @Module({
@@ -111,6 +112,7 @@ import { ShowcaseModule } from './showcase/showcase.module';
             RestoreDemoArtifactPortal1720000006000,
             AddDemoAccounts1720000007000,
             AddMagneticArchShowcase1720000008000,
+            IncreaseDemoFileLimits1720000009000,
           ],
           migrationsRun:
             configService.get<string>(

@@ -77,7 +77,7 @@ import {
 import { UpdateDemoArtifactDto } from './dto/update-demo-artifact.dto';
 import { UpdateDemoWorkflowDto } from './dto/update-demo-workflow.dto';
 import { DemoFileEntryDto } from './dto/demo-file-entry.dto';
-import { DEMO_MAX_FILE_BYTES } from './demo.constants';
+import { DEMO_MAX_FILE_BYTES, DEMO_MAX_FILE_COUNT } from './demo.constants';
 
 type ReservationOutcome = 'reserved' | 'session-limit' | 'global-limit';
 
@@ -312,7 +312,11 @@ export class DemoService {
         throw new BadRequestException('A bundle requires its file hashes');
       return;
     }
-    if (extension !== 'bundle' || files.length < 2 || files.length > 50)
+    if (
+      extension !== 'bundle' ||
+      files.length < 2 ||
+      files.length > DEMO_MAX_FILE_COUNT
+    )
       throw new BadRequestException('Invalid folder manifest');
     if (
       files.some(
@@ -361,7 +365,12 @@ export class DemoService {
     recordId: string,
     value: unknown,
   ): ManifestItem[] | undefined {
-    if (!Array.isArray(value) || value.length < 1 || value.length > 50) return;
+    if (
+      !Array.isArray(value) ||
+      value.length < 1 ||
+      value.length > DEMO_MAX_FILE_COUNT
+    )
+      return;
     const pattern = new RegExp(
       `^demo-artifact-${recordId}(?:-\\d{4})?\\.[a-z0-9]{1,12}$`,
     );

@@ -23,6 +23,8 @@ import { CreateDemoEventDto } from './dto/create-demo-event.dto';
 import { CreateDemoFeedbackDto } from './dto/create-demo-feedback.dto';
 import { CreateDemoSessionDto } from './dto/create-demo-session.dto';
 import { CreateDemoWorkflowDto } from './dto/create-demo-workflow.dto';
+import { DemoAccountCredentialsDto } from './dto/demo-account.dto';
+import { UpdateDemoWorkflowDto } from './dto/update-demo-workflow.dto';
 import { UpdateDemoStatusDto } from './dto/update-demo-status.dto';
 import { DemoAuthGuard } from './guards/demo-auth.guard';
 import { DemoControlGuard } from './guards/demo-control.guard';
@@ -48,6 +50,9 @@ export class DemoController {
       expiresAt: result.expiresAt,
       organization: result.organization,
       contributorAlias: result.contributorAlias,
+      ...(result.accountUsername
+        ? { accountUsername: result.accountUsername }
+        : {}),
     };
   }
 
@@ -135,6 +140,58 @@ export class DemoController {
     );
   }
 
+  @Post('account/register')
+  @UseGuards(DemoOriginGuard)
+  async registerAccount(
+    @Req() request: Request,
+    @Body() dto: DemoAccountCredentialsDto,
+    @Res({ passthrough: true }) response: Response,
+  ) {
+    return this.setSessionCookie(
+      response,
+      await this.demoService.registerAccount(
+        dto.organization,
+        dto.username,
+        dto.pin,
+        request.ip || 'unknown',
+      ),
+    );
+  }
+
+  @Post('account/sign-in')
+  @UseGuards(DemoOriginGuard)
+  async signInAccount(
+    @Req() request: Request,
+    @Body() dto: DemoAccountCredentialsDto,
+    @Res({ passthrough: true }) response: Response,
+  ) {
+    return this.setSessionCookie(
+      response,
+      await this.demoService.signInAccount(
+        dto.organization,
+        dto.username,
+        dto.pin,
+        request.ip || 'unknown',
+      ),
+    );
+  }
+
+  @Post('account/sign-out')
+  @UseGuards(DemoOriginGuard, DemoAuthGuard, DemoMutationGuard)
+  async signOutAccount(
+    @Req() request: DemoRequest,
+    @Res({ passthrough: true }) response: Response,
+  ) {
+    await this.demoService.signOut(request.user);
+    response.clearCookie(DEMO_COOKIE_NAME, {
+      secure: true,
+      httpOnly: true,
+      sameSite: 'strict',
+      path: '/',
+    });
+    return { signedOut: true };
+  }
+
   @Post('session/refresh')
   @UseGuards(DemoOriginGuard, DemoAuthGuard, DemoMutationGuard)
   async refreshSession(
@@ -197,6 +254,16 @@ export class DemoController {
   @UseGuards(DemoAuthGuard)
   workflow(@Req() request: DemoRequest, @Param('id') id: string) {
     return this.demoService.workflowResponse(id, request.user);
+  }
+
+  @Patch('workflows/:id')
+  @UseGuards(DemoOriginGuard, DemoAuthGuard, DemoMutationGuard)
+  updateWorkflow(
+    @Req() request: DemoRequest,
+    @Param('id') id: string,
+    @Body() dto: UpdateDemoWorkflowDto,
+  ) {
+    return this.demoService.updateWorkflow(request.user, id, dto);
   }
 
   @Get('workflows/:id/history')

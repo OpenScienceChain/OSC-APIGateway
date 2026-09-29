@@ -5,6 +5,7 @@ export interface DemoPrincipal {
   tokenSubject: string;
   sessionId: string;
   sessionHash: string;
+  accountId?: string;
   organizationId: string;
   organizationSlug: string;
   contributorAlias: string;
@@ -25,4 +26,5 @@ export interface DemoSessionResult {
   expiresAt: Date;
   organization: string;
   contributorAlias: string;
+  accountUsername?: string;
 }

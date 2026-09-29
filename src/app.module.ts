@@ -24,6 +24,7 @@ import { AddArtifactArchival1720000004000 } from './migrations/1720000004000-add
 import { CreateBaselineSchema1719999999000 } from './migrations/1719999999000-create-baseline-schema';
 import { DemoModule } from './demo/demo.module';
 import { DemoSessionEntity } from './demo/entities/demo-session.entity';
+import { DemoAccountEntity } from './demo/entities/demo-account.entity';
 import { DemoRuntimeEntity } from './demo/entities/demo-runtime.entity';
 import { DemoEventEntity } from './demo/entities/demo-event.entity';
 import { DemoFeedbackEntity } from './demo/entities/demo-feedback.entity';
@@ -31,6 +32,7 @@ import { DemoContributionEntity } from './demo/entities/demo-contribution.entity
 import { DemoArtifactEditEntity } from './demo/entities/demo-artifact-edit.entity';
 import { CreateUsrse26Demo1720000005000 } from './migrations/1720000005000-create-usrse26-demo';
 import { RestoreDemoArtifactPortal1720000006000 } from './migrations/1720000006000-restore-demo-artifact-portal';
+import { AddDemoAccounts1720000007000 } from './migrations/1720000007000-add-demo-accounts';
 
 @Module({
   imports: [
@@ -89,6 +91,7 @@ import { RestoreDemoArtifactPortal1720000006000 } from './migrations/17200000060
             OutboxEntity,
             OrganizationMembershipEntity,
             DemoSessionEntity,
+            DemoAccountEntity,
             DemoRuntimeEntity,
             DemoEventEntity,
             DemoFeedbackEntity,
@@ -104,6 +107,7 @@ import { RestoreDemoArtifactPortal1720000006000 } from './migrations/17200000060
             AddArtifactArchival1720000004000,
             CreateUsrse26Demo1720000005000,
             RestoreDemoArtifactPortal1720000006000,
+            AddDemoAccounts1720000007000,
           ],
           migrationsRun:
             configService.get<string>(

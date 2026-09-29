@@ -21,6 +21,7 @@ import {
   timingSafeEqual,
 } from 'crypto';
 import { Between, DataSource, In, IsNull, LessThan, Repository } from 'typeorm';
+import * as bcrypt from 'bcrypt';
 import { ArtifactEntity } from '../artifact/artifact.entity';
 import { ManifestItem } from '../artifact/artifact.entity';
 import { ArtifactService } from '../artifact/artifact.service';
@@ -67,12 +68,14 @@ import { DemoEventEntity } from './entities/demo-event.entity';
 import { DemoFeedbackEntity } from './entities/demo-feedback.entity';
 import { DemoRuntimeEntity } from './entities/demo-runtime.entity';
 import { DemoSessionEntity } from './entities/demo-session.entity';
+import { DemoAccountEntity } from './entities/demo-account.entity';
 import {
   DemoPrincipal,
   DemoSessionResult,
   DemoTokenPayload,
 } from './demo.types';
 import { UpdateDemoArtifactDto } from './dto/update-demo-artifact.dto';
+import { UpdateDemoWorkflowDto } from './dto/update-demo-workflow.dto';
 import { DemoFileEntryDto } from './dto/demo-file-entry.dto';
 import { DEMO_MAX_FILE_BYTES } from './demo.constants';
 
@@ -81,6 +84,11 @@ type ReservationOutcome = 'reserved' | 'session-limit' | 'global-limit';
 @Injectable()
 export class DemoService {
   private readonly logger = new Logger(DemoService.name);
+  private readonly authSources = new Map<
+    string,
+    { count: number; resetAt: number }
+  >();
+  private readonly dummyPinHash = bcrypt.hash('000000', 12);
 
   constructor(
     private readonly config: ConfigService,
@@ -91,6 +99,8 @@ export class DemoService {
     private readonly ghwService: GhwService,
     @InjectRepository(DemoSessionEntity)
     private readonly sessions: Repository<DemoSessionEntity>,
+    @InjectRepository(DemoAccountEntity)
+    private readonly accounts: Repository<DemoAccountEntity>,
     @InjectRepository(DemoRuntimeEntity)
     private readonly runtime: Repository<DemoRuntimeEntity>,
     @InjectRepository(DemoEventEntity)
@@ -142,6 +152,155 @@ export class DemoService {
     return createHash('sha256').update(JSON.stringify(payload)).digest('hex');
   }
 
+  private accountOwnerHash(accountId: string): string {
+    return this.sessionHash(`account:${accountId}`);
+  }
+
+  private checkAuthSource(source: string): void {
+    const key = this.sessionHash(`auth-source:${source}`);
+    const now = Date.now();
+    const previous = this.authSources.get(key);
+    const entry =
+      !previous || previous.resetAt <= now
+        ? { count: 0, resetAt: now + 15 * 60_000 }
+        : previous;
+    entry.count += 1;
+    this.authSources.set(key, entry);
+    if (entry.count > 30) {
+      throw new HttpException(
+        'Too many sign-in attempts. Try again later.',
+        HttpStatus.TOO_MANY_REQUESTS,
+      );
+    }
+    if (this.authSources.size > 10_000) {
+      for (const [candidate, value] of this.authSources) {
+        if (value.resetAt <= now) this.authSources.delete(candidate);
+      }
+    }
+  }
+
+  async registerAccount(
+    organizationSlug: DemoOrganizationSlug,
+    usernameInput: string,
+    pin: string,
+    source: string,
+  ): Promise<DemoSessionResult> {
+    this.checkAuthSource(source);
+    const runtime = await this.assertOpen();
+    const organization = await this.organizations.findOneBy({
+      slug: organizationSlug,
+    });
+    if (
+      !organization ||
+      organization.status !== OrganizationStatus.ACTIVE ||
+      organization.archivedAt
+    ) {
+      throw new ServiceUnavailableException(
+        'The selected organization is unavailable',
+      );
+    }
+    const username = usernameInput.toLowerCase();
+    if (
+      await this.accounts.existsBy({
+        organizationId: organization.id,
+        username,
+      })
+    ) {
+      throw new ConflictException(
+        'That username is unavailable in this organization',
+      );
+    }
+    const now = new Date();
+    const account = this.accounts.create({
+      organizationId: organization.id,
+      organizationSlug,
+      username,
+      pinHash: await bcrypt.hash(pin, 12),
+      failedAttempts: 0,
+      artifactCount: 0,
+      workflowCount: 0,
+      lockedUntil: null,
+      createdAt: now,
+      expiresAt: runtime.closesAt,
+    });
+    try {
+      await this.accounts.save(account);
+    } catch (error) {
+      if (
+        await this.accounts.existsBy({
+          organizationId: organization.id,
+          username,
+        })
+      ) {
+        throw new ConflictException(
+          'That username is unavailable in this organization',
+        );
+      }
+      throw error;
+    }
+    return this.createSession(organizationSlug, account);
+  }
+
+  async signInAccount(
+    organizationSlug: DemoOrganizationSlug,
+    usernameInput: string,
+    pin: string,
+    source: string,
+  ): Promise<DemoSessionResult> {
+    this.checkAuthSource(source);
+    await this.assertOpen();
+    const username = usernameInput.toLowerCase();
+    const account = await this.accounts.findOneBy({
+      organizationSlug,
+      username,
+    });
+    const now = new Date();
+    if (account?.lockedUntil && account.lockedUntil <= now) {
+      await this.accounts.update(
+        { id: account.id },
+        { failedAttempts: 0, lockedUntil: null },
+      );
+      account.failedAttempts = 0;
+      account.lockedUntil = null;
+    }
+    if (
+      !account ||
+      account.expiresAt <= now ||
+      (account.lockedUntil && account.lockedUntil > now)
+    ) {
+      await bcrypt.compare(pin, await this.dummyPinHash);
+      throw new UnauthorizedException('Username or PIN not recognized');
+    }
+    if (!(await bcrypt.compare(pin, account.pinHash))) {
+      await this.accounts
+        .createQueryBuilder()
+        .update(DemoAccountEntity)
+        .set({
+          failedAttempts: () =>
+            'CASE WHEN "failedAttempts" >= 4 THEN 5 ELSE "failedAttempts" + 1 END',
+          lockedUntil: () =>
+            'CASE WHEN "failedAttempts" >= 4 THEN :lockUntil ELSE "lockedUntil" END',
+        })
+        .where('"id" = :id', { id: account.id })
+        .andWhere('("lockedUntil" IS NULL OR "lockedUntil" <= :now)', { now })
+        .setParameter('lockUntil', new Date(now.getTime() + 15 * 60_000))
+        .execute();
+      throw new UnauthorizedException('Username or PIN not recognized');
+    }
+    await this.accounts.update(
+      { id: account.id },
+      { failedAttempts: 0, lockedUntil: null },
+    );
+    return this.createSession(organizationSlug, account);
+  }
+
+  async signOut(principal: DemoPrincipal): Promise<void> {
+    await this.sessions.update(
+      { id: principal.sessionId },
+      { expiresAt: new Date(0) },
+    );
+  }
+
   private validateFiles(
     fingerprint: string,
     sizeBytes: number,
@@ -155,15 +314,26 @@ export class DemoService {
     }
     if (extension !== 'bundle' || files.length < 2 || files.length > 50)
       throw new BadRequestException('Invalid folder manifest');
-    if (files.some((file) => !DEMO_FILE_EXTENSIONS.has(file.extension) || file.extension === 'bundle'))
+    if (
+      files.some(
+        (file) =>
+          !DEMO_FILE_EXTENSIONS.has(file.extension) ||
+          file.extension === 'bundle',
+      )
+    )
       throw new BadRequestException('A folder contains an unsupported file');
     if (files.reduce((sum, file) => sum + file.sizeBytes, 0) !== sizeBytes)
       throw new BadRequestException('Folder size does not match its files');
     const canonical = files
-      .map((file, index) => `${index + 1}\t${file.extension}\t${file.hash}\t${file.sizeBytes}`)
+      .map(
+        (file, index) =>
+          `${index + 1}\t${file.extension}\t${file.hash}\t${file.sizeBytes}`,
+      )
       .join('\n');
     if (createHash('sha256').update(canonical).digest('hex') !== fingerprint)
-      throw new BadRequestException('Folder footprint does not match its files');
+      throw new BadRequestException(
+        'Folder footprint does not match its files',
+      );
   }
 
   private manifestFor(
@@ -172,26 +342,42 @@ export class DemoService {
     extension: string,
     files?: DemoFileEntryDto[],
   ): ManifestItem[] {
-    return files?.map((file, index) => ({
-      hash: file.hash,
-      filename: `demo-artifact-${recordId}-${String(index + 1).padStart(4, '0')}.${file.extension}`,
-      algorithm: 'sha256',
-    })) || [{
-      hash: fingerprint,
-      filename: `demo-artifact-${recordId}.${extension}`,
-      algorithm: 'sha256',
-    }];
+    return (
+      files?.map((file, index) => ({
+        hash: file.hash,
+        filename: `demo-artifact-${recordId}-${String(index + 1).padStart(4, '0')}.${file.extension}`,
+        algorithm: 'sha256',
+      })) || [
+        {
+          hash: fingerprint,
+          filename: `demo-artifact-${recordId}.${extension}`,
+          algorithm: 'sha256',
+        },
+      ]
+    );
   }
 
-  private publicManifest(recordId: string, value: unknown): ManifestItem[] | undefined {
+  private publicManifest(
+    recordId: string,
+    value: unknown,
+  ): ManifestItem[] | undefined {
     if (!Array.isArray(value) || value.length < 1 || value.length > 50) return;
-    const pattern = new RegExp(`^demo-artifact-${recordId}(?:-\\d{4})?\\.[a-z0-9]{1,12}$`);
-    if (!value.every((entry) =>
-      entry && typeof entry === 'object' &&
-      typeof entry.filename === 'string' && pattern.test(entry.filename) &&
-      typeof entry.hash === 'string' && /^[a-f0-9]{64}$/.test(entry.hash) &&
-      entry.algorithm === 'sha256',
-    )) return;
+    const pattern = new RegExp(
+      `^demo-artifact-${recordId}(?:-\\d{4})?\\.[a-z0-9]{1,12}$`,
+    );
+    if (
+      !value.every(
+        (entry) =>
+          entry &&
+          typeof entry === 'object' &&
+          typeof entry.filename === 'string' &&
+          pattern.test(entry.filename) &&
+          typeof entry.hash === 'string' &&
+          /^[a-f0-9]{64}$/.test(entry.hash) &&
+          entry.algorithm === 'sha256',
+      )
+    )
+      return;
     return value.map((entry) => ({
       filename: entry.filename,
       hash: entry.hash,
@@ -505,7 +691,9 @@ export class DemoService {
       contribution.retentionExpiresAt > new Date() &&
       organization.id === contribution.organizationId &&
       record.keywords?.includes('usrse26-demo') &&
-      /^guest-[a-f0-9]+@demo\.invalid$/.test(record.submitterEmail) &&
+      /^(?:guest-[a-f0-9]+|member-[a-z][a-z0-9_-]{2,23})@demo\.invalid$/.test(
+        record.submitterEmail,
+      ) &&
       Object.values(DemoOrganizationSlug).includes(
         organization.slug as DemoOrganizationSlug,
       ) &&
@@ -585,17 +773,27 @@ export class DemoService {
     };
     if (contribution.recordType === DemoContributionType.ARTIFACT) {
       const artifact = record as ArtifactEntity;
-      const confirmed = artifact.submissionState === SubmissionState.SUCCESS && !!artifact.blockchainTxId;
-      const latestEdit = confirmed ? await this.artifactEdits.findOne({
-        where: { recordId: record.id },
-        order: { editNumber: 'DESC' },
-      }) : null;
-      const manifestConfirmed = confirmed && (!latestEdit || latestEdit.baselineTxId !== artifact.blockchainTxId);
-      const manifest = manifestConfirmed ? this.publicManifest(record.id, artifact.manifest) : undefined;
+      const confirmed =
+        artifact.submissionState === SubmissionState.SUCCESS &&
+        !!artifact.blockchainTxId;
+      const latestEdit = confirmed
+        ? await this.artifactEdits.findOne({
+            where: { recordId: record.id },
+            order: { editNumber: 'DESC' },
+          })
+        : null;
+      const manifestConfirmed =
+        confirmed &&
+        (!latestEdit || latestEdit.baselineTxId !== artifact.blockchainTxId);
+      const manifest = manifestConfirmed
+        ? this.publicManifest(record.id, artifact.manifest)
+        : undefined;
       return {
         ...common,
         ...(manifest ? { manifest } : {}),
-        ...(manifestConfirmed && typeof artifact.footprint === 'string' && /^[a-f0-9]{64}$/.test(artifact.footprint)
+        ...(manifestConfirmed &&
+        typeof artifact.footprint === 'string' &&
+        /^[a-f0-9]{64}$/.test(artifact.footprint)
           ? { footprint: artifact.footprint }
           : {}),
         lastUpdatedAt: artifact.updatedAt || artifact.submittedAt,
@@ -659,7 +857,9 @@ export class DemoService {
         .filter(
           (artifact) =>
             artifact.keywords?.includes('usrse26-demo') &&
-            /^guest-[a-f0-9]+@demo\.invalid$/.test(artifact.submitterEmail),
+            /^(?:guest-[a-f0-9]+|member-[a-z][a-z0-9_-]{2,23})@demo\.invalid$/.test(
+              artifact.submitterEmail,
+            ),
         )
         .map((artifact) => artifact.id),
     );
@@ -801,13 +1001,20 @@ export class DemoService {
             recordType === DemoContributionType.ARTIFACT
               ? {
                   ...(this.publicManifest(recordId, ledgerPayload?.manifest)
-                    ? { manifest: this.publicManifest(recordId, ledgerPayload?.manifest) }
+                    ? {
+                        manifest: this.publicManifest(
+                          recordId,
+                          ledgerPayload?.manifest,
+                        ),
+                      }
                     : {}),
                   ...(typeof ledgerPayload?.footprint === 'string' &&
                   /^[a-f0-9]{64}$/.test(ledgerPayload.footprint)
                     ? { footprint: ledgerPayload.footprint }
                     : {}),
-                  ...(ledgerPayload && validString(txId) && validString(timestamp)
+                  ...(ledgerPayload &&
+                  validString(txId) &&
+                  validString(timestamp)
                     ? { submissionState: SubmissionState.SUCCESS }
                     : {}),
                   ...(safeText('title', 200) !== undefined
@@ -873,6 +1080,7 @@ export class DemoService {
 
   async createSession(
     organizationSlug: DemoOrganizationSlug,
+    account?: DemoAccountEntity,
   ): Promise<DemoSessionResult> {
     const runtime = await this.assertOpen();
     const organization = await this.organizations.findOneBy({
@@ -926,7 +1134,10 @@ export class DemoService {
       sessionHash: this.sessionHash(sessionId),
       organizationId: organization.id,
       organizationSlug,
-      contributorAlias: `guest-${randomBytes(4).toString('hex')}`,
+      contributorAlias: account
+        ? `member-${account.username}`
+        : `guest-${randomBytes(4).toString('hex')}`,
+      accountId: account?.id || null,
       csrfHash: this.csrfHash(csrfToken),
       artifactCount: 0,
       workflowCount: 0,
@@ -974,6 +1185,7 @@ export class DemoService {
       expiresAt,
       organization: organizationSlug,
       contributorAlias: entity.contributorAlias,
+      ...(account ? { accountUsername: account.username } : {}),
     };
   }
 
@@ -1014,11 +1226,25 @@ export class DemoService {
         'Demonstration organization binding is invalid',
       );
     }
+    const account = session.accountId
+      ? await this.accounts.findOneBy({ id: session.accountId })
+      : null;
+    if (
+      session.accountId &&
+      (!account ||
+        account.expiresAt <= now ||
+        account.organizationId !== session.organizationId)
+    ) {
+      throw new UnauthorizedException('Invalid or expired contributor account');
+    }
     return {
       isDemo: true,
       tokenSubject: payload.sub,
       sessionId: session.id,
-      sessionHash: session.sessionHash,
+      sessionHash: account
+        ? this.accountOwnerHash(account.id)
+        : session.sessionHash,
+      ...(account ? { accountId: account.id } : {}),
       organizationId: session.organizationId,
       organizationSlug: session.organizationSlug,
       contributorAlias: session.contributorAlias,
@@ -1082,6 +1308,9 @@ export class DemoService {
       expiresAt,
       organization: session.organizationSlug,
       contributorAlias: session.contributorAlias,
+      ...(principal.accountId
+        ? { accountUsername: session.contributorAlias.slice('member-'.length) }
+        : {}),
     };
   }
 
@@ -1117,6 +1346,26 @@ export class DemoService {
         .execute();
       if (sessionUpdate.affected !== 1) return 'session-limit';
 
+      if (principal.accountId) {
+        const accountUpdate = await manager
+          .createQueryBuilder()
+          .update(DemoAccountEntity)
+          .set({ [sessionColumn]: () => `"${sessionColumn}" + 1` })
+          .where('"id" = :id', { id: principal.accountId })
+          .andWhere(`"${sessionColumn}" < :sessionLimit`, { sessionLimit })
+          .andWhere('"expiresAt" > :now', { now: new Date() })
+          .execute();
+        if (accountUpdate.affected !== 1) {
+          await manager
+            .createQueryBuilder()
+            .update(DemoSessionEntity)
+            .set({ [sessionColumn]: () => `"${sessionColumn}" - 1` })
+            .where('"id" = :id', { id: principal.sessionId })
+            .execute();
+          return 'session-limit';
+        }
+      }
+
       const runtimeUpdate = await manager
         .createQueryBuilder()
         .update(DemoRuntimeEntity)
@@ -1137,6 +1386,17 @@ export class DemoService {
         })
         .where('"id" = :id', { id: principal.sessionId })
         .execute();
+      if (principal.accountId) {
+        await manager
+          .createQueryBuilder()
+          .update(DemoAccountEntity)
+          .set({
+            [sessionColumn]: () =>
+              `CASE WHEN "${sessionColumn}" > 0 THEN "${sessionColumn}" - 1 ELSE 0 END`,
+          })
+          .where('"id" = :id', { id: principal.accountId })
+          .execute();
+      }
       await manager.update(
         DemoRuntimeEntity,
         { id: DEMO_RUNTIME_ID, state: DemoLifecycleState.OPEN },
@@ -1169,6 +1429,17 @@ export class DemoService {
         })
         .where('"id" = :id', { id: principal.sessionId })
         .execute();
+      if (principal.accountId) {
+        await manager
+          .createQueryBuilder()
+          .update(DemoAccountEntity)
+          .set({
+            [sessionColumn]: () =>
+              `CASE WHEN "${sessionColumn}" > 0 THEN "${sessionColumn}" - 1 ELSE 0 END`,
+          })
+          .where('"id" = :id', { id: principal.accountId })
+          .execute();
+      }
       await manager
         .createQueryBuilder()
         .update(DemoRuntimeEntity)
@@ -1197,7 +1468,7 @@ export class DemoService {
 
   private submitter(principal: DemoPrincipal) {
     return {
-      userId: principal.sessionId,
+      userId: principal.accountId || principal.sessionId,
       username: principal.contributorAlias,
       email: `${principal.contributorAlias}@demo.invalid`,
       organizationId: principal.organizationId,
@@ -1230,7 +1501,12 @@ export class DemoService {
           dois: payload.dois,
           fundingAgencies: payload.fundingAgencies,
           acknowledgements: payload.acknowledgements,
-          manifest: this.manifestFor(recordId, dto.fingerprint, dto.extension, dto.files),
+          manifest: this.manifestFor(
+            recordId,
+            dto.fingerprint,
+            dto.extension,
+            dto.files,
+          ),
           footprint: dto.fingerprint,
           submission_comment: payload.submissionComment,
         },
@@ -1394,7 +1670,12 @@ export class DemoService {
     correlationId?: string,
   ) {
     const payload = this.createArtifactPayload(dto);
-    this.validateFiles(dto.fingerprint, dto.sizeBytes, dto.extension, dto.files);
+    this.validateFiles(
+      dto.fingerprint,
+      dto.sizeBytes,
+      dto.extension,
+      dto.files,
+    );
     const payloadHash = this.artifactPayloadHash(payload);
     if (!DEMO_FILE_EXTENSIONS.has(dto.extension)) {
       throw new BadRequestException(
@@ -1503,9 +1784,16 @@ export class DemoService {
       throw new BadRequestException('The selected file exceeds the demo limit');
     }
     if (dto.files && replacement.some((value) => value === undefined))
-      throw new BadRequestException('A replacement folder requires fingerprint, size, and extension');
+      throw new BadRequestException(
+        'A replacement folder requires fingerprint, size, and extension',
+      );
     if (dto.fingerprint && dto.sizeBytes && dto.extension)
-      this.validateFiles(dto.fingerprint, dto.sizeBytes, dto.extension, dto.files);
+      this.validateFiles(
+        dto.fingerprint,
+        dto.sizeBytes,
+        dto.extension,
+        dto.files,
+      );
     if (
       ![
         dto.keywords,
@@ -1626,9 +1914,10 @@ export class DemoService {
           keyword !== 'usrse26-demo' &&
           keyword !== contribution.researchContext?.toLowerCase(),
       );
-      const currentExtension = artifact.manifest?.length > 1
-        ? 'bundle'
-        : artifact.manifest?.[0]?.filename?.split('.').pop();
+      const currentExtension =
+        artifact.manifest?.length > 1
+          ? 'bundle'
+          : artifact.manifest?.[0]?.filename?.split('.').pop();
       const changed =
         (payload.keywords !== undefined &&
           !sameList(payload.keywords, currentKeywords)) ||
@@ -1716,7 +2005,12 @@ export class DemoService {
       ...(payload.fingerprint !== undefined
         ? {
             footprint: payload.fingerprint,
-            manifest: this.manifestFor(recordId, payload.fingerprint, payload.extension, payload.files),
+            manifest: this.manifestFor(
+              recordId,
+              payload.fingerprint,
+              payload.extension,
+              payload.files,
+            ),
           }
         : {}),
     };
@@ -1970,6 +2264,120 @@ export class DemoService {
       submissionError: workflow.submissionError,
       submittedAt: workflow.submittedAt,
     };
+  }
+
+  async updateWorkflow(
+    principal: DemoPrincipal,
+    recordId: string,
+    dto: UpdateDemoWorkflowDto,
+  ) {
+    const runtime = await this.assertOpen();
+    const { record, contribution } = await this.demoRecord(
+      DemoContributionType.WORKFLOW,
+      recordId,
+      false,
+      principal,
+      runtime,
+    );
+    const workflow = record as WorkflowEntity;
+    if (
+      workflow.submissionState !== SubmissionState.SUCCESS ||
+      !workflow.blockchainTxId ||
+      workflow.visibility !== RecordVisibility.PUBLIC
+    ) {
+      throw new ConflictException(
+        'Workflow must be publicly confirmed before an edit',
+      );
+    }
+    const alreadyQueued = await this.dataSource
+      .getRepository(OutboxEntity)
+      .findOneBy({
+        messageId: dto.requestId,
+        routingKey: 'workflow.update',
+        aggregateId: recordId,
+      });
+    await this.assertConfirmedWorkflowArtifacts(
+      principal,
+      dto.artifactIds,
+      runtime,
+    );
+    const keywords = this.normalizeArtifactList(dto.keywords);
+    if (
+      keywords.length > 10 ||
+      keywords.some((keyword) => keyword.length > 100) ||
+      keywords.join('').length > 960
+    ) {
+      throw new BadRequestException(
+        'Workflow keywords exceed the public form limits',
+      );
+    }
+    const repositories = (dto.githubRepositories || []).map((repository) => ({
+      url: repository.url.trim(),
+      description: repository.description?.trim() || '',
+      gitHash: repository.gitHash?.trim() || '',
+      contents: (repository.contents || []).map((content) => ({
+        filename: content.filename.trim(),
+        hash: content.hash?.trim() || '',
+      })),
+    }));
+    const comment = this.normalizeArtifactText(
+      dto.submissionComment,
+      'Submission comment',
+    );
+    const patch = {
+      artifactIds: dto.artifactIds,
+      keywords: [
+        'usrse26-demo',
+        contribution.researchContext!.toLowerCase(),
+        ...keywords,
+      ],
+      githubRepositories: repositories,
+      submission_comment: comment,
+    };
+    if (alreadyQueued) {
+      const previous = alreadyQueued.payload?.patch as
+        | Record<string, unknown>
+        | undefined;
+      const sameRequest =
+        previous &&
+        JSON.stringify({
+          artifactIds: previous.artifactIds,
+          keywords: previous.keywords,
+          githubRepositories: previous.githubRepositories,
+          submission_comment: previous.submission_comment,
+        }) === JSON.stringify(patch);
+      if (!sameRequest)
+        throw new ConflictException(
+          'The request identifier was already used with different workflow changes',
+        );
+      return this.workflowResponse(recordId, principal);
+    }
+    const currentKeywords = workflow.keywords.filter(
+      (keyword) =>
+        keyword !== 'usrse26-demo' &&
+        keyword !== contribution.researchContext?.toLowerCase(),
+    );
+    const currentIds = workflow.artifacts.map((artifact) => artifact.id);
+    if (
+      JSON.stringify(keywords) === JSON.stringify(currentKeywords) &&
+      JSON.stringify(dto.artifactIds) === JSON.stringify(currentIds) &&
+      JSON.stringify(repositories) ===
+        JSON.stringify(workflow.githubRepositories || []) &&
+      comment === workflow.submission_comment
+    ) {
+      throw new BadRequestException(
+        'Change at least one workflow field before submitting',
+      );
+    }
+    await this.workflowService.updateUser(
+      recordId,
+      patch,
+      this.submitter(principal).email,
+      dto.requestId,
+      principal.organizationId,
+      principal.accountId || principal.sessionId,
+    );
+    return this.workflowResponse(recordId, principal);
   }
 
   async getArtifactHistory(

@@ -15,7 +15,7 @@ import { ArtifactEntity } from '../artifact/artifact.entity';
 import { SubmissionState } from '../artifact/enums/submission-state.enum';
 import { ArtifactService } from '../artifact/artifact.service';
 import { GhwService } from '../artifact/ghw.service';
-import { OutboxEntity } from '../messaging/outbox.entity';
+import { OutboxEntity, OutboxStatus } from '../messaging/outbox.entity';
 import { OrganizationMembershipEntity } from '../organization/organization-membership.entity';
 import { OrganizationStatus } from '../organization/membership-status.enum';
 import { OrganizationEntity } from '../organization/organization.entity';
@@ -40,6 +40,7 @@ import { DemoEventEntity } from './entities/demo-event.entity';
 import { DemoFeedbackEntity } from './entities/demo-feedback.entity';
 import { DemoRuntimeEntity } from './entities/demo-runtime.entity';
 import { DemoSessionEntity } from './entities/demo-session.entity';
+import { DemoAccountEntity } from './entities/demo-account.entity';
 import { DemoAuthGuard } from './guards/demo-auth.guard';
 import { DemoControlGuard } from './guards/demo-control.guard';
 import { DemoMutationGuard } from './guards/demo-mutation.guard';
@@ -73,6 +74,7 @@ describe('US-RSE 2026 demonstration contract', () => {
       WorkflowEntity,
       OutboxEntity,
       DemoSessionEntity,
+      DemoAccountEntity,
       DemoRuntimeEntity,
       DemoEventEntity,
       DemoFeedbackEntity,
@@ -242,6 +244,19 @@ describe('US-RSE 2026 demonstration contract', () => {
               if (!workflow) throw new NotFoundException();
               return workflow;
             },
+            updateUser: async (id: string, dto: any) => {
+              const workflow = await workflows.findOneOrFail({
+                where: { id },
+                relations: { organization: true, artifacts: true },
+              });
+              workflow.keywords = dto.keywords;
+              workflow.githubRepositories = dto.githubRepositories;
+              workflow.submission_comment = dto.submission_comment;
+              workflow.artifacts = await artifacts.findBy({
+                id: In(dto.artifactIds),
+              });
+              return workflows.save(workflow);
+            },
           }),
         },
         {
@@ -323,6 +338,26 @@ describe('US-RSE 2026 demonstration contract', () => {
     const cookie = setCookie[0].split(';')[0];
     return {
       cookie,
+      csrfToken: response.body.csrfToken,
+      alias: response.body.contributorAlias,
+    };
+  }
+
+  function accountRequest(
+    path: 'register' | 'sign-in',
+    username: string,
+    pin = '472915',
+    organization = DemoOrganizationSlug.NEUROSCIENCE_GATEWAY,
+  ) {
+    return request(app.getHttpServer())
+      .post(`/api/v1/demo/account/${path}`)
+      .set('Origin', ORIGIN)
+      .send({ organization, username, pin });
+  }
+
+  function accountSession(response: request.Response): Guest {
+    return {
+      cookie: String(response.headers['set-cookie'][0]).split(';')[0],
       csrfToken: response.body.csrfToken,
       alias: response.body.contributorAlias,
     };
@@ -809,7 +844,9 @@ describe('US-RSE 2026 demonstration contract', () => {
       if (type === 'artifacts') {
         expect(detail.body.manifest).toEqual(artifact.body.manifest);
         expect(detail.body.footprint).toBe(artifact.body.fingerprint);
-        expect(JSON.stringify(detail.body)).not.toMatch(/guest-[a-f0-9]+@demo\.invalid|original-private-name/i);
+        expect(JSON.stringify(detail.body)).not.toMatch(
+          /guest-[a-f0-9]+@demo\.invalid|original-private-name/i,
+        );
       }
       const pendingHistory = await request(app.getHttpServer())
         .get(`${base}/public/${type}/${id}/history`)
@@ -1220,7 +1257,9 @@ describe('US-RSE 2026 demonstration contract', () => {
   it('links confirmed same-organization artifacts while denying other organizations and ineligible records', async () => {
     const owner = await createGuest();
     const peer = await createGuest();
-    const otherOrganization = await createGuest(DemoOrganizationSlug.CITIZEN_SCIENCE);
+    const otherOrganization = await createGuest(
+      DemoOrganizationSlug.CITIZEN_SCIENCE,
+    );
     const artifact = await mutate(owner).artifact(artifactBody()).expect(201);
     const body = {
       requestId: randomUUID(),
@@ -1742,7 +1781,11 @@ describe('US-RSE 2026 demonstration contract', () => {
         timestamp: '2026-09-26T01:00:00Z',
         isDelete: false,
         revision: 1,
-        snapshot: { submissionState: 'SUCCESS', title: 'Version one', keywords: ['first'] },
+        snapshot: {
+          submissionState: 'SUCCESS',
+          title: 'Version one',
+          keywords: ['first'],
+        },
       },
     ]);
     expect(JSON.stringify(response.body)).not.toMatch(
@@ -1755,6 +1798,176 @@ describe('US-RSE 2026 demonstration contract', () => {
     expect(owned.body).toEqual(response.body);
   });
 
+  it('registers a PIN account, restores ownership after sign-in, and rejects other owners', async () => {
+    await accountRequest('register', 'researcher', '123').expect(400);
+    await request(app.getHttpServer())
+      .post('/api/v1/demo/account/register')
+      .set('Origin', 'https://evil.example')
+      .send({
+        organization: DemoOrganizationSlug.NEUROSCIENCE_GATEWAY,
+        username: 'researcher',
+        pin: '472915',
+      })
+      .expect(403);
+    const registered = await accountRequest('register', 'Researcher').expect(
+      201,
+    );
+    expect(registered.body.accountUsername).toBe('researcher');
+    expect(registered.body.pin).toBeUndefined();
+    const owner = accountSession(registered);
+    const created = await mutate(owner).artifact(artifactBody()).expect(201);
+    await confirmArtifact(created.body.id);
+    await request(app.getHttpServer())
+      .post('/api/v1/demo/account/sign-out')
+      .set('Origin', ORIGIN)
+      .set('Cookie', owner.cookie)
+      .set('X-Demo-CSRF', owner.csrfToken)
+      .expect(201);
+    await mutate(owner).artifact(artifactBody()).expect(401);
+    await accountRequest('sign-in', 'researcher', '0000').expect(401);
+    const signedIn = await accountRequest('sign-in', 'researcher').expect(201);
+    const returning = accountSession(signedIn);
+    const mine = await request(app.getHttpServer())
+      .get('/api/v1/demo/mine/artifacts')
+      .set('Cookie', returning.cookie)
+      .expect(200);
+    expect(mine.body.map((item: { id: string }) => item.id)).toContain(
+      created.body.id,
+    );
+    await request(app.getHttpServer())
+      .get(`/api/v1/demo/artifacts/${created.body.id}`)
+      .set('Cookie', returning.cookie)
+      .expect(200);
+    const stranger = accountSession(
+      await accountRequest('register', 'different').expect(201),
+    );
+    await mutate(stranger)
+      .updateArtifact(created.body.id, {
+        requestId: randomUUID(),
+        submissionComment: 'Attempt to modify another contributor record.',
+        keywords: ['wrong'],
+      })
+      .expect(404);
+    const account = await dataSource
+      .getRepository(DemoAccountEntity)
+      .findOneByOrFail({ username: 'researcher' });
+    expect(account.artifactCount).toBe(1);
+  });
+
+  it('temporarily locks a PIN account after five bad attempts', async () => {
+    await accountRequest('register', 'locked', '4831').expect(201);
+    for (let index = 0; index < 5; index++) {
+      await accountRequest('sign-in', 'locked', '0000').expect(401);
+    }
+    await accountRequest('sign-in', 'locked', '4831').expect(401);
+    const account = await dataSource
+      .getRepository(DemoAccountEntity)
+      .findOneByOrFail({ username: 'locked' });
+    expect(account.failedAttempts).toBe(5);
+    expect(account.lockedUntil?.getTime()).toBeGreaterThan(Date.now());
+  });
+
+  it('allows only the confirmed workflow owner to manage metadata after a new sign-in', async () => {
+    const registered = accountSession(
+      await accountRequest('register', 'workflowowner').expect(201),
+    );
+    const artifact = await mutate(registered)
+      .artifact(artifactBody())
+      .expect(201);
+    await confirmArtifact(artifact.body.id);
+    const workflow = await mutate(registered)
+      .workflow({
+        requestId: randomUUID(),
+        artifactIds: [artifact.body.id],
+        researchContext: 'REPRODUCIBLE_ANALYSIS',
+        title: 'A reproducible owner workflow',
+        description:
+          'This workflow has enough detail for the public contract test to exercise management and ownership.',
+        submissionComment: 'Initial workflow submission for owner test.',
+        keywords: ['initial'],
+        githubRepositories: [],
+      })
+      .expect(201);
+    await dataSource.getRepository(WorkflowEntity).update(workflow.body.id, {
+      submissionState: SubmissionState.SUCCESS,
+      blockchainTxId: 'confirmed-workflow-owner',
+    });
+    const stranger = accountSession(
+      await accountRequest('register', 'workflowpeer').expect(201),
+    );
+    const edit = {
+      requestId: randomUUID(),
+      artifactIds: [artifact.body.id],
+      keywords: ['revised'],
+      githubRepositories: [],
+      submissionComment: 'Revised workflow metadata by its owner.',
+    };
+    await request(app.getHttpServer())
+      .patch(`/api/v1/demo/workflows/${workflow.body.id}`)
+      .set('Origin', ORIGIN)
+      .set('Cookie', stranger.cookie)
+      .set('X-Demo-CSRF', stranger.csrfToken)
+      .send(edit)
+      .expect(404);
+    const returning = accountSession(
+      await accountRequest('sign-in', 'workflowowner').expect(201),
+    );
+    const updated = await request(app.getHttpServer())
+      .patch(`/api/v1/demo/workflows/${workflow.body.id}`)
+      .set('Origin', ORIGIN)
+      .set('Cookie', returning.cookie)
+      .set('X-Demo-CSRF', returning.csrfToken)
+      .send(edit)
+      .expect(200);
+    expect(updated.body.keywords).toEqual(['revised']);
+    expect(updated.body.submissionComment).toBe(edit.submissionComment);
+    const persisted = await dataSource
+      .getRepository(WorkflowEntity)
+      .findOneOrFail({
+        where: { id: workflow.body.id },
+        relations: { artifacts: true },
+      });
+    await dataSource.getRepository(OutboxEntity).save({
+      routingKey: 'workflow.update',
+      aggregateId: workflow.body.id,
+      messageId: edit.requestId,
+      payload: {
+        patch: {
+          artifactIds: persisted.artifacts.map((item) => item.id),
+          keywords: persisted.keywords,
+          githubRepositories: persisted.githubRepositories,
+          submission_comment: persisted.submission_comment,
+        },
+      },
+      status: OutboxStatus.PUBLISHED,
+      attempts: 0,
+      availableAt: new Date(),
+      publishedAt: new Date(),
+      lastError: null,
+    });
+    await request(app.getHttpServer())
+      .patch(`/api/v1/demo/workflows/${workflow.body.id}`)
+      .set('Origin', ORIGIN)
+      .set('Cookie', returning.cookie)
+      .set('X-Demo-CSRF', returning.csrfToken)
+      .send(edit)
+      .expect(200);
+    await request(app.getHttpServer())
+      .patch(`/api/v1/demo/workflows/${workflow.body.id}`)
+      .set('Origin', ORIGIN)
+      .set('Cookie', returning.cookie)
+      .set('X-Demo-CSRF', returning.csrfToken)
+      .send({ ...edit, keywords: ['different'] })
+      .expect(409);
+    await request(app.getHttpServer())
+      .patch(`/api/v1/demo/workflows/${workflow.body.id}`)
+      .set('Origin', ORIGIN)
+      .set('Cookie', returning.cookie)
+      .set('X-Demo-CSRF', returning.csrfToken)
+      .send({ ...edit, requestId: randomUUID(), title: 'Forbidden title' })
+      .expect(400);
+  });
+
   it('records bounded folder hashes and publishes generated manifest data without opening guarded writes', async () => {
     const owner = await createGuest();
     const other = await createGuest();
@@ -1762,68 +1975,125 @@ describe('US-RSE 2026 demonstration contract', () => {
       { hash: 'a'.repeat(64), sizeBytes: 17, extension: 'csv' },
       { hash: 'b'.repeat(64), sizeBytes: 23, extension: 'json' },
     ];
-    const canonical = files.map((file, index) =>
-      `${index + 1}\t${file.extension}\t${file.hash}\t${file.sizeBytes}`,
-    ).join('\n');
+    const canonical = files
+      .map(
+        (file, index) =>
+          `${index + 1}\t${file.extension}\t${file.hash}\t${file.sizeBytes}`,
+      )
+      .join('\n');
     const fingerprint = createHash('sha256').update(canonical).digest('hex');
-    const body = { ...artifactBody(), fingerprint, sizeBytes: 40, extension: 'bundle', files };
-    await mutate(owner).artifact({ ...body, sizeBytes: 41 }).expect(400);
-    await mutate(owner).artifact({ ...body, fingerprint: 'c'.repeat(64) }).expect(400);
-    const created = await mutate(owner).artifact(body).expect(201);
-    const id = created.body.id;
-    expect(created.body.manifest).toEqual([
-      { filename: `demo-artifact-${id}-0001.csv`, hash: files[0].hash, algorithm: 'sha256' },
-      { filename: `demo-artifact-${id}-0002.json`, hash: files[1].hash, algorithm: 'sha256' },
-    ]);
-    await confirmArtifact(id);
-    await mutate(owner).updateArtifact(id, {
-      requestId: randomUUID(),
-      submissionComment: 'The same folder must not create a new ledger revision.',
+    const body = {
+      ...artifactBody(),
       fingerprint,
       sizeBytes: 40,
       extension: 'bundle',
       files,
-    }).expect(400);
+    };
+    await mutate(owner)
+      .artifact({ ...body, sizeBytes: 41 })
+      .expect(400);
+    await mutate(owner)
+      .artifact({ ...body, fingerprint: 'c'.repeat(64) })
+      .expect(400);
+    const created = await mutate(owner).artifact(body).expect(201);
+    const id = created.body.id;
+    expect(created.body.manifest).toEqual([
+      {
+        filename: `demo-artifact-${id}-0001.csv`,
+        hash: files[0].hash,
+        algorithm: 'sha256',
+      },
+      {
+        filename: `demo-artifact-${id}-0002.json`,
+        hash: files[1].hash,
+        algorithm: 'sha256',
+      },
+    ]);
+    await confirmArtifact(id);
+    await mutate(owner)
+      .updateArtifact(id, {
+        requestId: randomUUID(),
+        submissionComment:
+          'The same folder must not create a new ledger revision.',
+        fingerprint,
+        sizeBytes: 40,
+        extension: 'bundle',
+        files,
+      })
+      .expect(400);
     (ghwService.fetchHistory as jest.Mock).mockResolvedValue({
-      items: [{ txId: 'folder-tx', timestamp: '2026-09-28T00:00:00Z', record: {
-        revision: 1, payload: { title: body.title, manifest: created.body.manifest, footprint: fingerprint },
-      } }],
+      items: [
+        {
+          txId: 'folder-tx',
+          timestamp: '2026-09-28T00:00:00Z',
+          record: {
+            revision: 1,
+            payload: {
+              title: body.title,
+              manifest: created.body.manifest,
+              footprint: fingerprint,
+            },
+          },
+        },
+      ],
       count: 1,
     });
     const publicHistory = await request(app.getHttpServer())
-      .get(`/api/v1/demo/public/artifacts/${id}/history`).expect(200);
-    expect(publicHistory.body.items[0].snapshot.manifest).toEqual(created.body.manifest);
+      .get(`/api/v1/demo/public/artifacts/${id}/history`)
+      .expect(200);
+    expect(publicHistory.body.items[0].snapshot.manifest).toEqual(
+      created.body.manifest,
+    );
     expect(publicHistory.body.items[0].snapshot.footprint).toBe(fingerprint);
-    expect(publicHistory.body.items[0].snapshot.submissionState).toBe('SUCCESS');
-    expect(JSON.stringify(publicHistory.body)).not.toMatch(/guest-[a-f0-9]+@demo\.invalid|session|original-private-name/i);
+    expect(publicHistory.body.items[0].snapshot.submissionState).toBe(
+      'SUCCESS',
+    );
+    expect(JSON.stringify(publicHistory.body)).not.toMatch(
+      /guest-[a-f0-9]+@demo\.invalid|session|original-private-name/i,
+    );
     const publicDetail = await request(app.getHttpServer())
-      .get(`/api/v1/demo/public/artifacts/${id}`).expect(200);
+      .get(`/api/v1/demo/public/artifacts/${id}`)
+      .expect(200);
     expect(publicDetail.body.manifest).toEqual(created.body.manifest);
     expect(publicDetail.body.footprint).toBe(fingerprint);
-    await request(app.getHttpServer()).get(`/api/v1/demo/artifacts/${id}/history`)
-      .set('Cookie', other.cookie).expect(403);
+    await request(app.getHttpServer())
+      .get(`/api/v1/demo/artifacts/${id}/history`)
+      .set('Cookie', other.cookie)
+      .expect(403);
     const ownerHistory = await request(app.getHttpServer())
-      .get(`/api/v1/demo/artifacts/${id}/history`).set('Cookie', owner.cookie).expect(200);
-    expect(ownerHistory.body.items[0].snapshot.manifest).toEqual(created.body.manifest);
+      .get(`/api/v1/demo/artifacts/${id}/history`)
+      .set('Cookie', owner.cookie)
+      .expect(200);
+    expect(ownerHistory.body.items[0].snapshot.manifest).toEqual(
+      created.body.manifest,
+    );
     expect(ownerHistory.body.items[0].snapshot.footprint).toBe(fingerprint);
     expect(ownerHistory.body).toEqual(publicHistory.body);
     const replacementFiles = [{ ...files[0], hash: 'c'.repeat(64) }, files[1]];
-    const replacementCanonical = replacementFiles.map((file, index) =>
-      `${index + 1}\t${file.extension}\t${file.hash}\t${file.sizeBytes}`,
-    ).join('\n');
-    const replacementFootprint = createHash('sha256').update(replacementCanonical).digest('hex');
-    const replaced = await mutate(owner).updateArtifact(id, {
-      requestId: randomUUID(),
-      submissionComment: 'A changed folder creates a new pending revision.',
-      fingerprint: replacementFootprint,
-      sizeBytes: 40,
-      extension: 'bundle',
-      files: replacementFiles,
-    }).expect(200);
+    const replacementCanonical = replacementFiles
+      .map(
+        (file, index) =>
+          `${index + 1}\t${file.extension}\t${file.hash}\t${file.sizeBytes}`,
+      )
+      .join('\n');
+    const replacementFootprint = createHash('sha256')
+      .update(replacementCanonical)
+      .digest('hex');
+    const replaced = await mutate(owner)
+      .updateArtifact(id, {
+        requestId: randomUUID(),
+        submissionComment: 'A changed folder creates a new pending revision.',
+        fingerprint: replacementFootprint,
+        sizeBytes: 40,
+        extension: 'bundle',
+        files: replacementFiles,
+      })
+      .expect(200);
     expect(replaced.body.manifest[0].hash).toBe('c'.repeat(64));
     expect(replaced.body.fingerprint).toBe(replacementFootprint);
     const pendingDetail = await request(app.getHttpServer())
-      .get(`/api/v1/demo/public/artifacts/${id}`).expect(200);
+      .get(`/api/v1/demo/public/artifacts/${id}`)
+      .expect(200);
     expect(pendingDetail.body.manifest).toBeUndefined();
     expect(pendingDetail.body.footprint).toBeUndefined();
     expect(pendingDetail.body.blockchainTxId).toBe(`confirmed-${id}`);

@@ -14,6 +14,7 @@ import { DemoEventEntity } from './entities/demo-event.entity';
 import { DemoFeedbackEntity } from './entities/demo-feedback.entity';
 import { DemoRuntimeEntity } from './entities/demo-runtime.entity';
 import { DemoSessionEntity } from './entities/demo-session.entity';
+import { DemoAccountEntity } from './entities/demo-account.entity';
 import { DemoAuthGuard } from './guards/demo-auth.guard';
 import { DemoControlGuard } from './guards/demo-control.guard';
 import { DemoMutationGuard } from './guards/demo-mutation.guard';
@@ -26,6 +27,7 @@ import { DemoOriginGuard } from './guards/demo-origin.guard';
     WorkflowModule,
     TypeOrmModule.forFeature([
       DemoSessionEntity,
+      DemoAccountEntity,
       DemoRuntimeEntity,
       DemoEventEntity,
       DemoFeedbackEntity,

@@ -18,6 +18,9 @@ export class DemoSessionEntity {
   @Column({ length: 40 })
   contributorAlias: string;
 
+  @Column('uuid', { nullable: true })
+  accountId: string | null;
+
   @Column({ length: 64 })
   csrfHash: string;
 

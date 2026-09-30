@@ -221,7 +221,7 @@
                   "  const token = pm.response.json().token;",
                   "  const segment = token.split('.')[1].replace(/-/g, '+').replace(/_/g, '/');",
                   "  const payload = JSON.parse(atob(segment));",
-                  "  pm.expect(payload.organizationName).to.eql('NSG: Neuroscience Gateway');",
+                  "  pm.expect(payload.organizationName).to.eql(pm.environment.get('nsgExpectedOrganizationName'));",
                   "  pm.expect(payload.exp - payload.iat).to.be.at.most(7200);",
                   "  pm.collectionVariables.set('nsgToken', token);",
                   "});"
@@ -270,7 +270,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"title\": \"NSG smoke artifact {{$timestamp}}\",\n  \"description\": \"A compact deployment verification dataset submitted for the Neuroscience Gateway multi-organization scenario.\",\n  \"keywords\": [\"neuroscience\", \"deployment-smoke\"],\n  \"links\": [],\n  \"dois\": [],\n  \"fundingAgencies\": [],\n  \"acknowledgements\": \"\",\n  \"manifest\": [],\n  \"footprint\": \"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\n  \"submission_comment\": \"Automated NSG deployment smoke submission.\"\n}"
+              "raw": "{\n  \"title\": \"NSG smoke artifact {{$timestamp}}\",\n  \"description\": \"A compact deployment verification dataset submitted for the Neuroscience Gateway multi-organization scenario.\",\n  \"visibility\": \"public\",\n  \"keywords\": [\"neuroscience\", \"deployment-smoke\"],\n  \"links\": [],\n  \"dois\": [],\n  \"fundingAgencies\": [],\n  \"acknowledgements\": \"\",\n  \"manifest\": [],\n  \"footprint\": \"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\n  \"submission_comment\": \"Automated NSG deployment smoke submission.\"\n}"
             },
             "url": "{{baseUrl}}/artifacts"
           }
@@ -287,7 +287,7 @@
                   "  const token = pm.response.json().token;",
                   "  const segment = token.split('.')[1].replace(/-/g, '+').replace(/_/g, '/');",
                   "  const payload = JSON.parse(atob(segment));",
-                  "  pm.expect(payload.organizationName).to.eql('Citizen Science');",
+                  "  pm.expect(payload.organizationName).to.eql(pm.environment.get('citizenScienceExpectedOrganizationName'));",
                   "  pm.collectionVariables.set('citizenScienceToken', token);",
                   "});"
                 ],
@@ -342,7 +342,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"title\": \"Citizen Science smoke artifact {{$timestamp}}\",\n  \"description\": \"A community-contributed dataset used to verify independent organization routing and preservation provenance.\",\n  \"keywords\": [\"citizen-science\", \"dataset\"],\n  \"links\": [],\n  \"dois\": [],\n  \"fundingAgencies\": [],\n  \"acknowledgements\": \"\",\n  \"manifest\": [],\n  \"footprint\": \"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\n  \"submission_comment\": \"Automated Citizen Science smoke submission.\"\n}"
+              "raw": "{\n  \"title\": \"Citizen Science smoke artifact {{$timestamp}}\",\n  \"description\": \"A community-contributed dataset used to verify independent organization routing and preservation provenance.\",\n  \"visibility\": \"public\",\n  \"keywords\": [\"citizen-science\", \"dataset\"],\n  \"links\": [],\n  \"dois\": [],\n  \"fundingAgencies\": [],\n  \"acknowledgements\": \"\",\n  \"manifest\": [],\n  \"footprint\": \"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\n  \"submission_comment\": \"Automated Citizen Science smoke submission.\"\n}"
             },
             "url": "{{baseUrl}}/artifacts"
           }
@@ -384,17 +384,17 @@
           }
         },
         {
-          "name": "Catalog contains both organizations",
+          "name": "Catalog contains both public smoke artifacts",
           "event": [
             {
               "listen": "test",
               "script": {
                 "exec": [
-                  "pm.test('Both organization records are discoverable', () => {",
+                  "pm.test('Both public smoke artifacts are discoverable', () => {",
                   "  pm.response.to.have.status(200);",
-                  "  const names = pm.response.json().map(item => item.organization && item.organization.name);",
-                  "  pm.expect(names).to.include('NSG: Neuroscience Gateway');",
-                  "  pm.expect(names).to.include('Citizen Science');",
+                  "  const titles = pm.response.json().map(item => item.title);",
+                  "  pm.expect(titles.some(title => title.startsWith('NSG smoke artifact '))).to.be.true;",
+                  "  pm.expect(titles.some(title => title.startsWith('Citizen Science smoke artifact '))).to.be.true;",
                   "});"
                 ],
                 "type": "text/javascript"

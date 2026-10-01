@@ -28,6 +28,7 @@ import { UserEntity } from '../user/user.entity';
 import { WorkflowEntity } from '../workflow/workflow.entity';
 import { WorkflowService } from '../workflow/workflow.service';
 import { DemoController } from './demo.controller';
+import { DEMO_EVENT_SESSION_LIMIT } from './demo.constants';
 import { DemoService } from './demo.service';
 import {
   DemoContributionType,
@@ -1893,6 +1894,26 @@ describe('US-RSE 2026 demonstration contract', () => {
       .findOneByOrFail({ username: 'locked' });
     expect(account.failedAttempts).toBe(5);
     expect(account.lockedUntil?.getTime()).toBeGreaterThan(Date.now());
+  });
+
+  it('does not let the retired guest-session quota lock out contributor accounts', async () => {
+    await dataSource.getRepository(DemoRuntimeEntity).update('usrse26', {
+      sessionReservations: DEMO_EVENT_SESSION_LIMIT,
+    });
+    const registered = await accountRequest('register', 'quotaowner').expect(
+      201,
+    );
+    expect(registered.body.accountUsername).toBe('quotaowner');
+    await accountRequest('sign-in', 'quotaowner').expect(201);
+    await request(app.getHttpServer())
+      .post('/api/v1/demo/session')
+      .set('Origin', ORIGIN)
+      .send({ organization: DemoOrganizationSlug.NEUROSCIENCE_GATEWAY })
+      .expect(503);
+    expect(
+      (await request(app.getHttpServer()).get('/api/v1/demo/status')).body
+        .state,
+    ).toBe('OPEN');
   });
 
   it('allows only the confirmed workflow owner to manage metadata after a new sign-in', async () => {

@@ -166,7 +166,8 @@ export class DemoService {
         : previous;
     entry.count += 1;
     this.authSources.set(key, entry);
-    if (entry.count > 30) {
+    // Behind the ALB this source is shared; CloudFront WAF enforces the viewer-IP limit.
+    if (entry.count > 3000) {
       throw new HttpException(
         'Too many sign-in attempts. Try again later.',
         HttpStatus.TOO_MANY_REQUESTS,
@@ -1111,30 +1112,23 @@ export class DemoService {
       );
     }
 
-    const sessionReservation = await this.runtime
-      .createQueryBuilder()
-      .update(DemoRuntimeEntity)
-      .set({ sessionReservations: () => '"sessionReservations" + 1' })
-      .where('"id" = :id', { id: DEMO_RUNTIME_ID })
-      .andWhere('"state" = :state', { state: DemoLifecycleState.OPEN })
-      .andWhere('"closesAt" > :now', { now: new Date() })
-      .andWhere('"sessionReservations" < :limit', {
-        limit: DEMO_EVENT_SESSION_LIMIT,
-      })
-      .execute();
-    if (sessionReservation.affected !== 1) {
-      await this.runtime.update(
-        { id: DEMO_RUNTIME_ID, state: DemoLifecycleState.OPEN },
-        {
-          state: DemoLifecycleState.READ_ONLY,
-          reason:
-            'Anonymous browser session capacity reached or the write window closed',
-          updatedAt: new Date(),
-        },
-      );
-      throw new ServiceUnavailableException(
-        'The demonstration is now read-only',
-      );
+    if (!account) {
+      const sessionReservation = await this.runtime
+        .createQueryBuilder()
+        .update(DemoRuntimeEntity)
+        .set({ sessionReservations: () => '"sessionReservations" + 1' })
+        .where('"id" = :id', { id: DEMO_RUNTIME_ID })
+        .andWhere('"state" = :state', { state: DemoLifecycleState.OPEN })
+        .andWhere('"closesAt" > :now', { now: new Date() })
+        .andWhere('"sessionReservations" < :limit', {
+          limit: DEMO_EVENT_SESSION_LIMIT,
+        })
+        .execute();
+      if (sessionReservation.affected !== 1) {
+        throw new ServiceUnavailableException(
+          'Anonymous demonstration session capacity reached',
+        );
+      }
     }
 
     const sessionId = randomUUID();
@@ -1169,15 +1163,17 @@ export class DemoService {
     try {
       await this.sessions.save(entity);
     } catch (error) {
-      await this.runtime
-        .createQueryBuilder()
-        .update(DemoRuntimeEntity)
-        .set({
-          sessionReservations: () =>
-            'CASE WHEN "sessionReservations" > 0 THEN "sessionReservations" - 1 ELSE 0 END',
-        })
-        .where('"id" = :id', { id: DEMO_RUNTIME_ID })
-        .execute();
+      if (!account) {
+        await this.runtime
+          .createQueryBuilder()
+          .update(DemoRuntimeEntity)
+          .set({
+            sessionReservations: () =>
+              'CASE WHEN "sessionReservations" > 0 THEN "sessionReservations" - 1 ELSE 0 END',
+          })
+          .where('"id" = :id', { id: DEMO_RUNTIME_ID })
+          .execute();
+      }
       throw error;
     }
     await this.recordInternalEvent(entity, DemoEventName.SESSION_STARTED);

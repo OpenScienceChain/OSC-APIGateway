@@ -30,7 +30,7 @@
     "@nestjs/jwt": "^11.0.0",
     "@nestjs/mapped-types": "^2.1.0",
     "@nestjs/passport": "^11.0.5",
-    "@nestjs/platform-express": "^11.2.3",
+    "@nestjs/platform-express": "11.2.6",
     "@nestjs/typeorm": "^11.0.3",
     "amqplib": "^0.10.8",
     "bcrypt": "^6.0.0",
@@ -97,7 +97,7 @@
     "js-yaml@^4": "4.3.2",
     "jws": "3.2.3",
     "minimatch@>=9.0.0 <10.0.0": "9.0.9",
-    "multer": "2.3.0",
+    "multer": "2.4.0",
     "picomatch@^2": "2.3.2",
     "yaml@^2": "2.9.0",
     "validator": "13.15.35"

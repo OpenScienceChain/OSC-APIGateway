@@ -29,7 +29,7 @@ jobs:
       - name: Build local image without cloud credentials
         run: docker build --tag osc-apigateway:${{ github.sha }} .
       - name: Generate CycloneDX image SBOM
-        uses: anchore/sbom-action@a930d0ac434e3182448fe678398ba5713717112a # v0.21.0
+        uses: anchore/sbom-action@3ad7283483fc7af8ff2b4ea19663c2d5ca935e26 # v0.24.2
         with:
           image: osc-apigateway:${{ github.sha }}
           format: cyclonedx-json

@@ -9,9 +9,11 @@ records are never joined to accounts, organizations, or contributions.
 
 ## Definitions
 
-- **Consenting browsers:** unexpired browser consent rows. One browser can
-  represent multiple people; one person can use multiple browsers. Not all
-  visitors consent, so this is not total audience size.
+- **Consenting browsers:** distinct consented browser hashes with an unexpired
+  cookie or a retained event in the 30-day reporting window. The report also
+  shows active consent cookies separately. One browser can represent multiple
+  people; one person can use multiple browsers. Not all visitors consent, so
+  this is not total audience size.
 - **Visit:** consecutive events from one consenting browser, with a new visit
   after more than 30 minutes of inactivity. Entry and exit are the first and
   last route templates within the visit; a single-page exit has at most one
@@ -19,11 +21,14 @@ records are never joined to accounts, organizations, or contributions.
 - **Pageview/journey:** an allowlisted `PAGE_VIEW` event; journeys are adjacent
   pageview route templates in a visit. Query strings and concrete record IDs
   are never accepted.
-- **Funnel:** consenting browsers reaching pageview, record view, form start,
-  attempt, and UI-reported completion in that order. Each stage's denominator
-  is the previous stage count; stage zero uses all consenting browsers. Client
-  completions are not authoritative. `/internal/metrics` separately reports
-  accepted and confirmed ledger records and latency.
+- **Funnels:** the contribution funnel is form start, attempt, and UI-reported
+  completion; the separate exploration funnel is pageview, record view, and
+  history view. A visitor can contribute without opening a record, so those
+  paths must not share one mandatory sequence. Each stage's denominator is the
+  previous stage count; stage zero uses consenting browsers observed in the
+  reporting window. Client completions are not authoritative.
+  `/internal/metrics` separately reports accepted and confirmed ledger records
+  and latency.
 - **Hourly device rows:** event and visit-entry hour in UTC, run phase and ID,
   and viewport-size category (small mobile, mobile, tablet, desktop). Device
   category is a width bucket, not device detection.

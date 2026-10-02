@@ -24,6 +24,7 @@ const CONTROL_KEY = 'control-key-32-characters-for-tests';
 
 describe('anonymous UX measurement', () => {
   let app: INestApplication;
+  let browsers: Repository<DemoUxBrowserEntity>;
   let events: Repository<DemoUxEventEntity>;
   let feedback: Repository<DemoUxFeedbackEntity>;
 
@@ -88,6 +89,7 @@ describe('anonymous UX measurement', () => {
       }),
     );
     await app.init();
+    browsers = module.get(getRepositoryToken(DemoUxBrowserEntity));
     events = module.get(getRepositoryToken(DemoUxEventEntity));
     feedback = module.get(getRepositoryToken(DemoUxFeedbackEntity));
   });
@@ -227,7 +229,10 @@ describe('anonymous UX measurement', () => {
     expect(initial.body.journeys['/ -> /list-artifacts']).toBe(1);
     expect(
       initial.body.funnel.map((stage) => stage.consentingBrowsers),
-    ).toEqual([1, 1, 1, 1, 1]);
+    ).toEqual([1, 1, 1]);
+    expect(
+      initial.body.explorationFunnel.map((stage) => stage.consentingBrowsers),
+    ).toEqual([1, 1, 0]);
     const allEvents = await events.find({ order: { occurredAt: 'ASC' } });
     await events.update(allEvents[allEvents.length - 1].id, {
       occurredAt: new Date(Date.now() + 31 * 60_000),
@@ -236,6 +241,43 @@ describe('anonymous UX measurement', () => {
     expect(later.body.visits.count).toBe(2);
     expect(later.body.entryPages['/list-artifacts']).toBe(1);
     expect(later.body.hourly[0].deviceCategory).toBe('MOBILE');
+  });
+
+  it('counts direct form contributions without requiring record exploration or an active cookie', async () => {
+    const server = app.getHttpServer();
+    const consent = await request(server)
+      .post('/api/v1/demo/analytics/session')
+      .set('Origin', ORIGIN)
+      .expect(201);
+    const cookie = consent.headers['set-cookie'][0].split(';')[0];
+    for (const eventType of [
+      'FORM_START',
+      'SUBMISSION_ATTEMPT',
+      'WORKFLOW_SUBMITTED',
+    ]) {
+      await request(server)
+        .post('/api/v1/demo/analytics/events')
+        .set('Origin', ORIGIN)
+        .set('Cookie', cookie)
+        .send({
+          eventType,
+          route: '/create-workflow',
+          deviceCategory: 'DESKTOP',
+        })
+        .expect(201);
+    }
+    const row = await browsers.findOneByOrFail({});
+    await browsers.update(row.browserHash, { expiresAt: new Date(0) });
+    const report = await metricRequest(server).expect(200);
+    expect(report.body.analyticsParticipation).toMatchObject({
+      consentingBrowsers: 1,
+      activeConsentCookies: 0,
+    });
+    expect(report.body.funnel.map((stage) => stage.consentingBrowsers)).toEqual(
+      [1, 1, 1],
+    );
+    expect(report.body.funnel[0].denominator).toBe(1);
+    expect(report.body.explorationFunnel[0].consentingBrowsers).toBe(0);
   });
 
   it('purges expired anonymous data', async () => {

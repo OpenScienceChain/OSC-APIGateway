@@ -301,9 +301,12 @@ export class DemoUxService implements OnModuleInit, OnModuleDestroy {
   async metrics() {
     await this.maybePurge();
     const since = new Date(Date.now() - UX_COOKIE_MS);
-    const [browsers, eventCount, events, counters, feedback] =
+    const [activeBrowsers, eventCount, events, counters, feedback] =
       await Promise.all([
-        this.browsers.countBy({ expiresAt: MoreThan(new Date()) }),
+        this.browsers.find({
+          where: { expiresAt: MoreThan(new Date()) },
+          select: { browserHash: true },
+        }),
         this.events.countBy({ occurredAt: MoreThan(since) }),
         this.events.find({
           where: { occurredAt: MoreThan(since) },
@@ -432,16 +435,44 @@ export class DemoUxService implements OnModuleInit, OnModuleDestroy {
       finish();
     }
 
-    const funnelStages = [
-      {
-        name: 'PAGE_VIEW',
-        matches: (event: DemoUxEventEntity) => event.eventType === 'PAGE_VIEW',
-      },
-      {
-        name: 'RECORD_VIEW',
-        matches: (event: DemoUxEventEntity) =>
-          event.eventType === 'RECORD_VIEW',
-      },
+    const consentingBrowsers = new Set([
+      ...activeBrowsers.map((browser) => browser.browserHash),
+      ...byBrowser.keys(),
+    ]).size;
+    const orderedFunnel = (
+      stages: {
+        name: string;
+        matches: (event: DemoUxEventEntity) => boolean;
+      }[],
+    ) => {
+      const reached = stages.map(() => 0);
+      for (const browserEvents of byBrowser.values()) {
+        let cursor = 0;
+        for (let index = 0; index < stages.length; index += 1) {
+          const found = browserEvents.findIndex(
+            (event, position) =>
+              position >= cursor && stages[index].matches(event),
+          );
+          if (found < 0) break;
+          reached[index] += 1;
+          cursor = found + 1;
+        }
+      }
+      return stages.map((stage, index) => {
+        const denominator =
+          index === 0 ? consentingBrowsers : reached[index - 1];
+        return {
+          stage: stage.name,
+          consentingBrowsers: reached[index],
+          denominator,
+          dropOff: Math.max(0, denominator - reached[index]),
+          conversionFromPrevious: denominator
+            ? reached[index] / denominator
+            : null,
+        };
+      });
+    };
+    const contributionFunnel = orderedFunnel([
       {
         name: 'FORM_START',
         matches: (event: DemoUxEventEntity) => event.eventType === 'FORM_START',
@@ -458,32 +489,23 @@ export class DemoUxService implements OnModuleInit, OnModuleDestroy {
             event.eventType,
           ),
       },
-    ];
-    const reached = funnelStages.map(() => 0);
-    for (const browserEvents of byBrowser.values()) {
-      let cursor = 0;
-      for (let index = 0; index < funnelStages.length; index += 1) {
-        const found = browserEvents.findIndex(
-          (event, position) =>
-            position >= cursor && funnelStages[index].matches(event),
-        );
-        if (found < 0) break;
-        reached[index] += 1;
-        cursor = found + 1;
-      }
-    }
-    const funnel = funnelStages.map((stage, index) => {
-      const denominator = index === 0 ? browsers : reached[index - 1];
-      return {
-        stage: stage.name,
-        consentingBrowsers: reached[index],
-        denominator,
-        dropOff: Math.max(0, denominator - reached[index]),
-        conversionFromPrevious: denominator
-          ? reached[index] / denominator
-          : null,
-      };
-    });
+    ]);
+    const explorationFunnel = orderedFunnel([
+      {
+        name: 'PAGE_VIEW',
+        matches: (event: DemoUxEventEntity) => event.eventType === 'PAGE_VIEW',
+      },
+      {
+        name: 'RECORD_VIEW',
+        matches: (event: DemoUxEventEntity) =>
+          event.eventType === 'RECORD_VIEW',
+      },
+      {
+        name: 'HISTORY_VIEW',
+        matches: (event: DemoUxEventEntity) =>
+          event.eventType === 'HISTORY_VIEW',
+      },
+    ]);
     const surveyByPhase: Record<
       string,
       {
@@ -517,7 +539,8 @@ export class DemoUxService implements OnModuleInit, OnModuleDestroy {
         'Last 30 days; analytics represent consenting browsers, not people or all visitors.',
       truncated: eventCount > UX_REPORT_EVENT_LIMIT,
       analyticsParticipation: {
-        consentingBrowsers: browsers,
+        consentingBrowsers,
+        activeConsentCookies: activeBrowsers.length,
         consentAcceptActions: counterTotals.CONSENT_ACCEPTED || 0,
         consentRejectActions: counterTotals.CONSENT_REJECTED || 0,
         consentRevokeActions: counterTotals.CONSENT_REVOKED || 0,
@@ -536,7 +559,8 @@ export class DemoUxService implements OnModuleInit, OnModuleDestroy {
       exitPages,
       journeys,
       actionCounts,
-      funnel,
+      funnel: contributionFunnel,
+      explorationFunnel,
       hourly: Object.values(hourly).map((value) => ({
         hour: value.hour,
         phase: value.phase,

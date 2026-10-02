@@ -15,6 +15,12 @@ import { DemoFeedbackEntity } from './entities/demo-feedback.entity';
 import { DemoRuntimeEntity } from './entities/demo-runtime.entity';
 import { DemoSessionEntity } from './entities/demo-session.entity';
 import { DemoAccountEntity } from './entities/demo-account.entity';
+import { DemoUxBrowserEntity } from './entities/demo-ux-browser.entity';
+import { DemoUxEventEntity } from './entities/demo-ux-event.entity';
+import { DemoUxCounterEntity } from './entities/demo-ux-counter.entity';
+import { DemoUxFeedbackEntity } from './entities/demo-ux-feedback.entity';
+import { DemoUxController } from './demo-ux.controller';
+import { DemoUxService } from './demo-ux.service';
 import { DemoAuthGuard } from './guards/demo-auth.guard';
 import { DemoControlGuard } from './guards/demo-control.guard';
 import { DemoMutationGuard } from './guards/demo-mutation.guard';
@@ -33,18 +39,23 @@ import { DemoOriginGuard } from './guards/demo-origin.guard';
       DemoFeedbackEntity,
       DemoContributionEntity,
       DemoArtifactEditEntity,
+      DemoUxBrowserEntity,
+      DemoUxEventEntity,
+      DemoUxCounterEntity,
+      DemoUxFeedbackEntity,
       OrganizationEntity,
       ArtifactEntity,
       WorkflowEntity,
     ]),
   ],
-  controllers: [DemoController],
+  controllers: [DemoController, DemoUxController],
   providers: [
     DemoService,
     DemoAuthGuard,
     DemoMutationGuard,
     DemoOriginGuard,
     DemoControlGuard,
+    DemoUxService,
   ],
   exports: [DemoService],
 })

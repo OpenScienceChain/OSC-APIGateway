@@ -36,6 +36,11 @@ import { AddDemoAccounts1720000007000 } from './migrations/1720000007000-add-dem
 import { AddMagneticArchShowcase1720000008000 } from './migrations/1720000008000-add-magnetic-arch-showcase';
 import { IncreaseDemoFileLimits1720000009000 } from './migrations/1720000009000-increase-demo-file-limits';
 import { ShowcaseModule } from './showcase/showcase.module';
+import { DemoUxBrowserEntity } from './demo/entities/demo-ux-browser.entity';
+import { DemoUxEventEntity } from './demo/entities/demo-ux-event.entity';
+import { DemoUxCounterEntity } from './demo/entities/demo-ux-counter.entity';
+import { DemoUxFeedbackEntity } from './demo/entities/demo-ux-feedback.entity';
+import { CreateDemoUxMeasurement1720000010000 } from './migrations/1720000010000-create-demo-ux-measurement';
 
 @Module({
   imports: [
@@ -100,6 +105,10 @@ import { ShowcaseModule } from './showcase/showcase.module';
             DemoFeedbackEntity,
             DemoContributionEntity,
             DemoArtifactEditEntity,
+            DemoUxBrowserEntity,
+            DemoUxEventEntity,
+            DemoUxCounterEntity,
+            DemoUxFeedbackEntity,
           ],
           migrations: [
             CreateBaselineSchema1719999999000,
@@ -113,6 +122,7 @@ import { ShowcaseModule } from './showcase/showcase.module';
             AddDemoAccounts1720000007000,
             AddMagneticArchShowcase1720000008000,
             IncreaseDemoFileLimits1720000009000,
+            CreateDemoUxMeasurement1720000010000,
           ],
           migrationsRun:
             configService.get<string>(

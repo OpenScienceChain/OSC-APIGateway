@@ -147,6 +147,7 @@ lerna-debug.log*
 
 # Tests
 /coverage
+/duplication-report
 /.nyc_output
 
 # IDEs and editors

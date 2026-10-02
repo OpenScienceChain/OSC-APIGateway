@@ -66,6 +66,8 @@ jobs:
         run: npm run test:ci
       - name: Build
         run: npm run build
+      - name: Report production source duplication and reject new blocks
+        run: npm run duplication:check
       - name: Audit production dependencies
         run: npm audit --omit=dev --audit-level=critical
       - name: Generate CycloneDX SBOM
@@ -76,6 +78,7 @@ jobs:
           name: apigateway-evidence
           path: |
             coverage/
+            duplication-report/
             sbom.cdx.json
           if-no-files-found: warn
           retention-days: 14

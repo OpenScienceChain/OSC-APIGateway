@@ -17,9 +17,10 @@ RUN npm run build && npm prune --omit=dev --ignore-scripts
 FROM node:24.20.0-alpine3.24@sha256:e67514e5d0f6c46656005e1b693b2ec9d52e80b641307de684d4a015ba7a4eaf AS production
 WORKDIR /app
 
-# Pin the current Alpine OpenSSL security update. npm is a build tool, not a
-# runtime dependency, so remove it and its transitive packages as well.
-RUN apk add --no-cache libcrypto3=3.5.8-r0 libssl3=3.5.8-r0 \
+# Require the fixed OpenSSL floor from Alpine's repository. The image scan
+# remains the gate for any other newly disclosed vulnerability.
+# npm is a build tool, not a runtime dependency.
+RUN apk add --no-cache 'libcrypto3>=3.5.8-r0' 'libssl3>=3.5.8-r0' \
   && rm -rf /usr/local/lib/node_modules/npm \
   /usr/local/bin/npm \
   /usr/local/bin/npx

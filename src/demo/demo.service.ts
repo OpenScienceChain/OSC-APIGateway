@@ -2625,35 +2625,100 @@ export class DemoService {
         item.acceptedAt.getTime(),
       ]),
     );
-    const [artifacts, workflows] = await Promise.all([
-      artifactAcceptedAt.size
-        ? this.artifacts.find({
-            select: { id: true, submissionState: true, updatedAt: true },
-            where: {
-              id: In([...artifactAcceptedAt.keys()]),
-              submissionState: SubmissionState.SUCCESS,
-            },
-          })
-        : [],
-      workflowAcceptedAt.size
-        ? this.workflows.find({
-            select: { id: true, submissionState: true, updatedAt: true },
-            where: {
-              id: In([...workflowAcceptedAt.keys()]),
-              submissionState: SubmissionState.SUCCESS,
-            },
-          })
-        : [],
-    ]);
+    const [artifacts, workflows, organizations, historyEvents] =
+      await Promise.all([
+        artifactAcceptedAt.size
+          ? this.artifacts.find({
+              select: { id: true, submissionState: true, updatedAt: true },
+              where: {
+                id: In([...artifactAcceptedAt.keys()]),
+              },
+            })
+          : [],
+        workflowAcceptedAt.size
+          ? this.workflows.find({
+              select: { id: true, submissionState: true, updatedAt: true },
+              where: {
+                id: In([...workflowAcceptedAt.keys()]),
+              },
+            })
+          : [],
+        this.organizations.find({ select: { id: true, slug: true } }),
+        this.events.find({
+          where: { eventName: DemoEventName.HISTORY_VIEWED },
+          select: { organizationId: true, occurredAt: true },
+        }),
+      ]);
+    const artifactById = new Map<string, ArtifactEntity>(
+      artifacts.map((item) => [item.id, item] as const),
+    );
+    const workflowById = new Map<string, WorkflowEntity>(
+      workflows.map((item) => [item.id, item] as const),
+    );
+    const orgById = new Map(
+      organizations.map((item) => [item.id, item.slug || item.id]),
+    );
+    const hourlyByOrganization: Record<
+      string,
+      {
+        hour: string;
+        organization: string;
+        artifact: Record<string, number>;
+        workflow: Record<string, number>;
+        historyViews: number;
+      }
+    > = {};
+    const hourRow = (date: Date, organizationId: string) => {
+      const hour = date.toISOString().slice(0, 13) + ':00Z';
+      const organization = orgById.get(organizationId) || 'unknown';
+      const key = `${hour}|${organization}`;
+      hourlyByOrganization[key] ||= {
+        hour,
+        organization,
+        artifact: { accepted: 0, confirmed: 0, failed: 0, pending: 0 },
+        workflow: { accepted: 0, confirmed: 0, failed: 0, pending: 0 },
+        historyViews: 0,
+      };
+      return hourlyByOrganization[key];
+    };
+    for (const contribution of [
+      ...artifactContributions,
+      ...workflowContributions,
+    ]) {
+      const type =
+        contribution.recordType === DemoContributionType.ARTIFACT
+          ? 'artifact'
+          : 'workflow';
+      const row = hourRow(contribution.acceptedAt, contribution.organizationId);
+      row[type].accepted += 1;
+      const record =
+        type === 'artifact'
+          ? artifactById.get(contribution.recordId)
+          : workflowById.get(contribution.recordId);
+      if (record?.submissionState === SubmissionState.SUCCESS) {
+        row[type].confirmed += 1;
+      } else if (record?.submissionState === SubmissionState.FAILED) {
+        row[type].failed += 1;
+      } else {
+        row[type].pending += 1;
+      }
+    }
+    for (const event of historyEvents) {
+      hourRow(event.occurredAt, event.organizationId).historyViews += 1;
+    }
     const artifactLatency = artifacts.flatMap((item) => {
       const acceptedAt = artifactAcceptedAt.get(item.id);
-      return acceptedAt !== undefined && item.updatedAt
+      return item.submissionState === SubmissionState.SUCCESS &&
+        acceptedAt !== undefined &&
+        item.updatedAt
         ? [item.updatedAt.getTime() - acceptedAt]
         : [];
     });
     const workflowLatency = workflows.flatMap((item) => {
       const acceptedAt = workflowAcceptedAt.get(item.id);
-      return acceptedAt !== undefined && item.updatedAt
+      return item.submissionState === SubmissionState.SUCCESS &&
+        acceptedAt !== undefined &&
+        item.updatedAt
         ? [item.updatedAt.getTime() - acceptedAt]
         : [];
     });
@@ -2672,6 +2737,11 @@ export class DemoService {
         artifact: this.latencySummary(artifactLatency),
         workflow: this.latencySummary(workflowLatency),
       },
+      hourlyByOrganization: Object.values(hourlyByOrganization).sort((a, b) =>
+        `${a.hour}|${a.organization}`.localeCompare(
+          `${b.hour}|${b.organization}`,
+        ),
+      ),
       queue: {
         pending: pending.length,
         failed: outbox.length - pending.length,

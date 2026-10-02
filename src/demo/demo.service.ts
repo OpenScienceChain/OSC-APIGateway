@@ -372,16 +372,17 @@ export class DemoService {
       value.length > DEMO_MAX_FILE_COUNT
     )
       return;
-    const pattern = new RegExp(
-      `^demo-artifact-${recordId}(?:-\\d{4})?\\.[a-z0-9]{1,12}$`,
-    );
+    const filenamePrefix = `demo-artifact-${recordId}`;
     if (
       !value.every(
         (entry) =>
           entry &&
           typeof entry === 'object' &&
           typeof entry.filename === 'string' &&
-          pattern.test(entry.filename) &&
+          entry.filename.startsWith(filenamePrefix) &&
+          /^(?:-\d{4})?\.[a-z0-9]{1,12}$/.test(
+            entry.filename.slice(filenamePrefix.length),
+          ) &&
           typeof entry.hash === 'string' &&
           /^[a-f0-9]{64}$/.test(entry.hash) &&
           entry.algorithm === 'sha256',

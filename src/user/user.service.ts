@@ -351,12 +351,13 @@ The application requires at least one admin user to function properly.
   ): Promise<OrganizationEntity | null> {
     const creatorOrganizationId = creator.organization?.id;
     if (
-      creator.roles.includes(Role.PI) &&
-      createUserDto.organizationId &&
-      createUserDto.organizationId !== creatorOrganizationId
+      creator.platformAdmin !== true &&
+      (!creatorOrganizationId ||
+        (createUserDto.organizationId &&
+          createUserDto.organizationId !== creatorOrganizationId))
     ) {
       throw new BadRequestException(
-        'PIs can only create users in their own organization',
+        'Users can only be created in the active organization',
       );
     }
 
@@ -470,7 +471,7 @@ The application requires at least one admin user to function properly.
   private async findUserByIdOrThrow(id: string): Promise<UserEntity> {
     const user = await this.userRepository.findOne({
       where: { id },
-      relations: ['memberships', 'memberships.organization'],
+      relations: ['organization', 'memberships', 'memberships.organization'],
     });
 
     if (!user) {
@@ -492,6 +493,15 @@ The application requires at least one admin user to function properly.
 
     // If updating another user
     if (!isSelfUpdate) {
+      if (
+        currentUser.platformAdmin !== true &&
+        (!currentUser.organization?.id ||
+          currentUser.organization.id !== userToUpdate.organization?.id)
+      ) {
+        throw new UnauthorizedException(
+          'Cannot update a user outside the active organization',
+        );
+      }
       // Admin can only update non-admin users
       if (userToUpdate.roles.includes(Role.ADMIN)) {
         throw new UnauthorizedException(

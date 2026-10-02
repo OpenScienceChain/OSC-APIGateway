@@ -344,7 +344,7 @@ describe('UserService', () => {
         service.create(createUserDto, creator),
       ).rejects.toHaveProperty(
         'message',
-        'Failed to associate user with organization: Cannot create PI or Collaborator users: No organization exists in the system',
+        'Users can only be created in the active organization',
       );
     });
 
@@ -359,11 +359,44 @@ describe('UserService', () => {
       const creator = new UserEntity();
       creator.id = faker.string.uuid();
       creator.roles = [Role.ADMIN];
+      creator.organization = userList[0].organization;
 
       const result = await service.create(createUserDto, creator);
       expect(result).toBeDefined();
       expect(result.roles).toContain(Role.ADMIN);
       expect(result.organizationName).toBe('Test Organization');
+    });
+
+    it('rejects an organization admin creating a user in another organization', async () => {
+      const otherOrganization = await organizationRepository.save(
+        organizationRepository.create({
+          name: 'Other Organization',
+          description: 'Other organization for scope testing',
+        }),
+      );
+      const createUserDto = new UserCreateDto();
+      createUserDto.name = 'Other Admin';
+      createUserDto.username = 'otheradmin123';
+      createUserDto.email = 'other-admin@example.com';
+      createUserDto.password = 'Password123!';
+      createUserDto.role = Role.ADMIN;
+      createUserDto.organizationId = otherOrganization.id;
+
+      const creator = new UserEntity();
+      creator.id = faker.string.uuid();
+      creator.roles = [Role.ADMIN];
+      creator.organization = userList[0].organization;
+
+      await expect(service.create(createUserDto, creator)).rejects.toThrow(
+        BadRequestException,
+      );
+      expect(
+        await repository.findOne({ where: { username: 'otheradmin123' } }),
+      ).toBeNull();
+
+      creator.platformAdmin = true;
+      const created = await service.create(createUserDto, creator);
+      expect(created.organizationId).toBe(otherOrganization.id);
     });
 
     it('should throw BadRequestException if creator is not an admin or PI', async () => {
@@ -555,6 +588,7 @@ describe('UserService', () => {
       currentUser.username = 'adminuser';
       currentUser.email = 'admin@example.com';
       currentUser.password = 'hashedpassword';
+      currentUser.organization = userToUpdate.organization;
 
       const result = await service.update(
         userToUpdate.id,
@@ -565,6 +599,40 @@ describe('UserService', () => {
       expect(result).toBeDefined();
       expect(result.name).toEqual('Updated Name');
       expect((result as any).password).toBeUndefined();
+    });
+
+    it('rejects a cross-organization password reset by an organization admin', async () => {
+      const otherOrganization = await organizationRepository.save(
+        organizationRepository.create({
+          name: 'Other Organization',
+          description: 'Other organization for scope testing',
+        }),
+      );
+      const target = await repository.save({
+        name: 'Other User',
+        username: 'otheruser123',
+        email: 'other-user@example.com',
+        password: 'original-hash',
+        roles: [Role.COLLABORATOR],
+        organization: otherOrganization,
+      });
+      const admin = new UserEntity();
+      admin.id = faker.string.uuid();
+      admin.roles = [Role.ADMIN];
+      admin.organization = userList[0].organization;
+      const update = new UserUpdateDto();
+      update.password = 'NewPassword123!';
+
+      await expect(service.update(target.id, update, admin)).rejects.toThrow(
+        UnauthorizedException,
+      );
+      expect(
+        (await repository.findOneByOrFail({ id: target.id })).password,
+      ).toBe('original-hash');
+
+      admin.platformAdmin = true;
+      const result = await service.update(target.id, update, admin);
+      expect((result as any).requiresRelogin).toBe(true);
     });
 
     it('should throw NotFoundException when user not found', async () => {
@@ -636,6 +704,7 @@ describe('UserService', () => {
       const currentUser = new UserEntity();
       currentUser.id = faker.string.uuid();
       currentUser.roles = [Role.ADMIN];
+      currentUser.organization = userToUpdate.organization;
 
       await expect(
         service.update(userToUpdate.id, updateUserDto, currentUser),
@@ -650,6 +719,7 @@ describe('UserService', () => {
       const currentUser = new UserEntity();
       currentUser.id = faker.string.uuid();
       currentUser.roles = [Role.ADMIN];
+      currentUser.organization = userToUpdate.organization;
 
       await expect(
         service.update(userToUpdate.id, updateUserDto, currentUser),
@@ -664,6 +734,7 @@ describe('UserService', () => {
       const currentUser = new UserEntity();
       currentUser.id = faker.string.uuid();
       currentUser.roles = [Role.ADMIN];
+      currentUser.organization = userToUpdate.organization;
 
       await expect(
         service.update(userToUpdate.id, updateUserDto, currentUser),
@@ -753,7 +824,10 @@ describe('UserService', () => {
           email: 'admin@example.com',
           password: 'hashedpassword',
           roles: [Role.ADMIN],
+          organization: userToUpdate.organization,
         }));
+
+      admin.organization = userToUpdate.organization;
 
       const result = await service.update(
         userToUpdate.id,

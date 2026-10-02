@@ -1,0 +1,158 @@
+name: CI
+
+on:
+  push:
+    branches: [master, develop, 'feature/**', 'release/**']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: apigateway-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  dependency-review:
+    name: Dependency review
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0
+        with:
+          fail-on-severity: moderate
+
+  quality:
+    name: Quality, tests, and build
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          fetch-depth: 0
+      - name: Test supply-chain scanner
+        run: python3 -m unittest scripts/security/test_check_npm_supply_chain.py
+      - name: Scan lockfile before installation
+        run: python3 scripts/security/check_npm_supply_chain.py --repo . --skip-installed
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: 20
+          package-manager-cache: false
+      - name: Prove dependency lifecycle scripts are suppressed
+        run: python3 scripts/security/test_lifecycle_suppression.py
+      - name: Install reviewed dependencies
+        run: bash scripts/security/secure-install.sh --ci
+      - name: Check changed TypeScript
+        if: github.event_name != 'workflow_dispatch'
+        shell: bash
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          if [ -z "$BASE_SHA" ] || ! git cat-file -e "$BASE_SHA^{commit}" 2>/dev/null; then
+            base_ref="${GITHUB_BASE_REF:-develop}"
+            BASE_SHA="$(git merge-base HEAD "origin/$base_ref" 2>/dev/null || git rev-parse HEAD^)"
+          fi
+          mapfile -t files < <(git diff --name-only --diff-filter=ACMR "$BASE_SHA" "$GITHUB_SHA" -- 'src/**/*.ts' 'test/**/*.ts')
+          if [ "${#files[@]}" -gt 0 ]; then
+            ./node_modules/.bin/prettier --check "${files[@]}"
+            ./node_modules/.bin/eslint "${files[@]}"
+          fi
+      - name: Unit tests with coverage
+        run: npm run test:ci
+      - name: Build
+        run: npm run build
+      - name: Report production source duplication and reject new blocks
+        run: npm run duplication:check
+      - name: Audit production dependencies
+        run: npm audit --omit=dev --audit-level=critical
+      - name: Generate CycloneDX SBOM
+        run: npm sbom --sbom-format cyclonedx > sbom.cdx.json
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always()
+        with:
+          name: apigateway-evidence
+          path: |
+            coverage/
+            duplication-report/
+            sbom.cdx.json
+          if-no-files-found: warn
+          retention-days: 14
+
+  secret-scan:
+    name: Secret scan
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          fetch-depth: 0
+      - name: Scan changed history with checksum-pinned Gitleaks
+        shell: bash
+        run: |
+          set -euo pipefail
+          archive=/tmp/gitleaks_8.30.1_linux_x64.tar.gz
+          curl --fail --silent --show-error --location \
+            --output "$archive" \
+            https://github.com/gitleaks/gitleaks/releases/download/v8.30.1/gitleaks_8.30.1_linux_x64.tar.gz
+          echo "551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb  $archive" | sha256sum --check --strict
+          tar --extract --gzip --file "$archive" --directory /tmp gitleaks
+          if [[ "${{ github.event_name }}" == "pull_request" ]]; then
+            range="${{ github.event.pull_request.base.sha }}...${{ github.event.pull_request.head.sha }}"
+          elif [[ "${{ github.event.before }}" != "0000000000000000000000000000000000000000" ]]; then
+            range="${{ github.event.before }}..${{ github.sha }}"
+          else
+            range="$(git merge-base HEAD origin/develop)..HEAD"
+          fi
+          /tmp/gitleaks git --redact --no-banner --exit-code 1 --log-opts="$range" .
+
+  codeql:
+    name: CodeQL
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+      packages: read
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: github/codeql-action/init@24c7eb380a2dc368f2d129e4c65e51d172983a1e # v4
+        with:
+          languages: javascript-typescript
+      - uses: github/codeql-action/analyze@24c7eb380a2dc368f2d129e4c65e51d172983a1e # v4
+
+  container:
+    name: Container build and scan
+    needs: quality
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - name: Build local image
+        run: docker build --tag osc-apigateway:${{ github.sha }} .
+      - name: Generate CycloneDX image SBOM
+        uses: anchore/sbom-action@a930d0ac434e3182448fe678398ba5713717112a # v0.21.0
+        with:
+          image: osc-apigateway:${{ github.sha }}
+          format: cyclonedx-json
+          output-file: image-sbom.cdx.json
+          artifact-name: apigateway-image-sbom.cdx.json
+      - name: Scan local image
+        uses: anchore/scan-action@e1165082ffb1fe366ebaf02d8526e7c4989ea9d2 # v7.4.0
+        id: scan
+        with:
+          image: osc-apigateway:${{ github.sha }}
+          fail-build: true
+          severity-cutoff: critical
+          output-format: sarif
+      - uses: github/codeql-action/upload-sarif@24c7eb380a2dc368f2d129e4c65e51d172983a1e # v4
+        if: always() && steps.scan.outputs.sarif != ''
+        with:
+          sarif_file: ${{ steps.scan.outputs.sarif }}

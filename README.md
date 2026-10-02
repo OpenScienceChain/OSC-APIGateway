@@ -200,7 +200,7 @@ sequenceDiagram
     GW->>DB: submissionState = SUCCESS, blockchainTxId
 ```
 
-The gateway publishes through a single **topic exchange** `artifact.exchange` with routing keys `artifact.submit`, `artifact.update`, `workflow.submit`, `workflow.update`. If RabbitMQ is unreachable, artifact creation still **succeeds** (the failure is logged) — a deliberate graceful-degradation choice. See [ARCHITECTURE.md](docs/ARCHITECTURE.md) for the full rationale and quality-attribute analysis.
+The gateway publishes through a single **topic exchange** `artifact.exchange` with routing keys `artifact.submit`, `artifact.update`, `workflow.submit`, and `workflow.update`. Domain writes and outbox commands commit in one database transaction. Publisher confirms acknowledge delivery to RabbitMQ; unavailable commands retry with backoff and move to a failed state after the configured limit. Every ledger-bound command carries server-generated user, organization, operation, timestamp, and correlation metadata.
 
 ---
 
@@ -225,7 +225,8 @@ src/
 ## Running locally
 
 ```bash
-npm install
+./scripts/security/secure-install.ps1
+# or: bash scripts/security/secure-install.sh
 
 # Provide environment (see docs/environment-variables.md)
 # Minimum: DB_*, JWT_SECRET, RABBITMQ_*, admin seed users

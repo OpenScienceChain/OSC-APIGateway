@@ -20,6 +20,10 @@ import { JwtAuthGuard } from '../auth/guards/jwt-auth/jwt-auth.guard';
 import { RolesGuard } from '../auth/roles/roles.guards';
 import { Roles } from '../shared/decorators/roles.decorators';
 import { Role } from '../shared/enums/role.enums';
+import {
+  OrganizationScopeGuard,
+  PlatformAdminGuard,
+} from '../auth/guards/organization-scope.guard';
 
 @Controller('organizations')
 @UseInterceptors(BusinessErrorsInterceptor)
@@ -42,8 +46,7 @@ export class OrganizationController {
 
   // Create
   @Post()
-  @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles(Role.ADMIN)
+  @UseGuards(JwtAuthGuard, PlatformAdminGuard)
   async create(@Body() organizationDto: OrganizationDto) {
     const organization: OrganizationEntity = plainToInstance(
       OrganizationEntity,
@@ -54,7 +57,7 @@ export class OrganizationController {
 
   // Update
   @Put(':organizationId')
-  @UseGuards(JwtAuthGuard, RolesGuard)
+  @UseGuards(JwtAuthGuard, OrganizationScopeGuard, RolesGuard)
   @Roles(Role.ADMIN)
   async update(
     @Param('organizationId') organizationId: string,
@@ -69,7 +72,7 @@ export class OrganizationController {
 
   // Delete
   @Delete(':organizationId')
-  @UseGuards(JwtAuthGuard, RolesGuard)
+  @UseGuards(JwtAuthGuard, OrganizationScopeGuard, RolesGuard)
   @Roles(Role.ADMIN)
   @HttpCode(204)
   async delete(@Param('organizationId') organizationId: string) {
@@ -78,8 +81,7 @@ export class OrganizationController {
 
   // Delete all organizations
   @Delete()
-  @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles(Role.ADMIN)
+  @UseGuards(JwtAuthGuard, PlatformAdminGuard)
   @HttpCode(204)
   async deleteAll() {
     await this.organizationService.deleteAll();

@@ -12,7 +12,7 @@ import {
   Req,
   UnauthorizedException,
   Query,
-  Headers
+  Headers,
 } from '@nestjs/common';
 import { ArtifactService } from './artifact.service';
 import { ArtifactEntity } from './artifact.entity';
@@ -29,6 +29,7 @@ import { Role } from '../shared/enums/role.enums';
 import { UpdateArtifactUserDto } from './dto/update-artifact-user.dto';
 import { GhwService } from './ghw.service';
 import { ListArtifactDto } from './dto/list-artifact.dto';
+import { OptionalJwtAuthGuard } from '../auth/guards/optional-jwt-auth.guard';
 
 @Controller('artifacts')
 @UseInterceptors(BusinessErrorsInterceptor)
@@ -46,38 +47,53 @@ export class ArtifactController {
     @Body() createArtifactDto: CreateArtifactDto,
     @Headers('x-correlation-id') corrId?: string,
   ): Promise<import('./dto/list-artifact.dto').ListArtifactDto> {
-    if (!req.user || !req.user.username || !req.user.email) {
-      throw new UnauthorizedException('User information is missing from token');
+    if (
+      !req.user ||
+      !req.user.id ||
+      !req.user.username ||
+      !req.user.email ||
+      !req.user.organizationId
+    ) {
+      throw new UnauthorizedException(
+        'User or organization information is missing from token',
+      );
     }
 
     // Extraer username y email directamente del token JWT
     const submitterInfo = {
+      userId: req.user.id,
       username: req.user.username,
-      email: req.user.email
+      email: req.user.email,
+      organizationId: req.user.organizationId,
     };
 
-    return await this.artifactService.create(createArtifactDto, submitterInfo, corrId);
+    return await this.artifactService.create(
+      createArtifactDto,
+      submitterInfo,
+      corrId,
+    );
   }
 
   @Get()
-  async findAll(): Promise<ListArtifactDto[]> {
-    return await this.artifactService.findAll();
+  @UseGuards(OptionalJwtAuthGuard)
+  async findAll(@Req() req: any = {}): Promise<ListArtifactDto[]> {
+    return await this.artifactService.findAll(req.user?.organizationId);
   }
 
   @Get(':id')
+  @UseGuards(OptionalJwtAuthGuard)
   async findOne(
-    @Param('id') id: string
+    @Param('id') id: string,
+    @Req() req: any = {},
   ): Promise<GetArtifactDto> {
-    return await this.artifactService.findOne(id);
+    return await this.artifactService.findOne(id, req.user?.organizationId);
   }
 
   @Delete(':id')
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles(Role.ADMIN)
-  async delete(
-    @Param('id') id: string
-  ): Promise<void> {
-    return await this.artifactService.delete(id);
+  async delete(@Param('id') id: string, @Req() req: any = {}): Promise<void> {
+    return await this.artifactService.delete(id, req.user?.organizationId);
   }
 
   @Patch(':id')
@@ -99,7 +115,14 @@ export class ArtifactController {
     @Body() updateArtifactDetailsDto: UpdateArtifactUserDto,
     @Headers('x-correlation-id') corrId?: string,
   ): Promise<ArtifactEntity> {
-    return await this.artifactService.updateUser(id, updateArtifactDetailsDto, req?.user?.email, corrId);
+    return await this.artifactService.updateUser(
+      id,
+      updateArtifactDetailsDto,
+      req?.user?.email,
+      corrId,
+      req?.user?.organizationId,
+      req?.user?.id,
+    );
   }
 
   @Get(':id/history')
@@ -111,8 +134,19 @@ export class ArtifactController {
     @Query('order') orderQ?: 'asc' | 'desc',
     @Query('includeValue') includeValueQ?: string,
     @Headers('x-correlation-id') corrId?: string,
+    @Req() req: any = {},
   ): Promise<any> {
-    return this.artifactService.getHistory(id, { offset: offsetQ, limit: limitQ, order: orderQ, includeValue: includeValueQ }, corrId);
+    return this.artifactService.getHistory(
+      id,
+      {
+        offset: offsetQ,
+        limit: limitQ,
+        order: orderQ,
+        includeValue: includeValueQ,
+      },
+      corrId,
+      req.user?.organizationId,
+    );
   }
 
   @Post(':id/history/refresh')
@@ -120,7 +154,12 @@ export class ArtifactController {
   async refreshHistory(
     @Param('id') id: string,
     @Headers('x-correlation-id') corrId?: string,
+    @Req() req: any = {},
   ): Promise<any> {
-    return this.artifactService.refreshHistory(id, corrId);
+    return this.artifactService.refreshHistory(
+      id,
+      corrId,
+      req.user?.organizationId,
+    );
   }
 }

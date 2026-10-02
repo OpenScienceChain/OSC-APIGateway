@@ -1,4 +1,11 @@
-import { IsEmail, IsNotEmpty, IsString, IsEnum } from 'class-validator';
+import {
+  IsEmail,
+  IsNotEmpty,
+  IsString,
+  IsEnum,
+  IsOptional,
+  IsUUID,
+} from 'class-validator';
 import { Role } from '../../shared/enums/role.enums';
 
 export class UserCreateDto {
@@ -19,7 +26,13 @@ export class UserCreateDto {
   @IsNotEmpty()
   password: string;
 
-  @IsEnum(Role, { message: 'Invalid role. Must be one of: ADMIN, PI, COLLABORATOR' })
+  @IsEnum(Role, {
+    message: 'Invalid role. Must be one of: ADMIN, PI, COLLABORATOR',
+  })
   @IsNotEmpty()
   role: Role;
+
+  @IsUUID('4')
+  @IsOptional()
+  organizationId?: string;
 }

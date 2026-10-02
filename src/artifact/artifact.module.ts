@@ -16,6 +16,6 @@ import { GhwService } from './ghw.service';
   ],
   controllers: [ArtifactController],
   providers: [ArtifactService, GhwService],
-  exports: [ArtifactService]
+  exports: [ArtifactService, GhwService],
 })
 export class ArtifactModule {}

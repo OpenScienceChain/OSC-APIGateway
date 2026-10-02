@@ -1,0 +1,115 @@
+name: Deploy staging
+
+on:
+  workflow_dispatch:
+    inputs:
+      image_tag:
+        description: Immutable image tag (defaults to the selected commit SHA)
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: apigateway-staging
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build verified API image
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - name: Scan lockfile before image build
+        run: python3 scripts/security/check_npm_supply_chain.py --repo . --skip-installed
+      - name: Build local image without cloud credentials
+        run: docker build --tag osc-apigateway:${{ github.sha }} .
+      - name: Generate CycloneDX image SBOM
+        uses: anchore/sbom-action@a930d0ac434e3182448fe678398ba5713717112a # v0.21.0
+        with:
+          image: osc-apigateway:${{ github.sha }}
+          format: cyclonedx-json
+          output-file: image-sbom.cdx.json
+          upload-artifact: false
+      - name: Scan local image
+        uses: anchore/scan-action@e1165082ffb1fe366ebaf02d8526e7c4989ea9d2 # v7.4.0
+        with:
+          image: osc-apigateway:${{ github.sha }}
+          fail-build: true
+          severity-cutoff: critical
+      - name: Archive and checksum verified image
+        run: |
+          docker save osc-apigateway:${{ github.sha }} | gzip > apigateway-image.tar.gz
+          sha256sum apigateway-image.tar.gz image-sbom.cdx.json > SHA256SUMS
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: apigateway-${{ github.sha }}
+          path: |
+            apigateway-image.tar.gz
+            image-sbom.cdx.json
+            SHA256SUMS
+          if-no-files-found: error
+          retention-days: 7
+
+  deploy:
+    name: Deploy verified API image
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: staging
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: apigateway-${{ github.sha }}
+      - name: Verify and load image archive
+        run: |
+          sha256sum --check SHA256SUMS
+          gunzip --stdout apigateway-image.tar.gz | docker load
+      - name: Configure AWS credentials with GitHub OIDC
+        uses: aws-actions/configure-aws-credentials@cabfdba3510de1431bac9dba27511d97497fc100 # v5
+        with:
+          role-to-assume: arn:aws:iam::269624229733:role/osc-github-deploy-api
+          aws-region: us-west-2
+          role-duration-seconds: 900
+      - name: Log in to ECR
+        id: ecr
+        uses: aws-actions/amazon-ecr-login@d539f0932e70871a027e9d5a9d8fc38589180a64 # v2
+      - name: Push image and resolve immutable digest
+        id: image
+        shell: bash
+        env:
+          REGISTRY: ${{ steps.ecr.outputs.registry }}
+          REPOSITORY: osc-api
+          REQUESTED_TAG: ${{ inputs.image_tag }}
+        run: |
+          set -euo pipefail
+          tag="${REQUESTED_TAG:-${GITHUB_SHA}}"
+          tagged_image="$REGISTRY/$REPOSITORY:$tag"
+          docker tag osc-apigateway:${GITHUB_SHA} "$tagged_image"
+          docker push "$tagged_image"
+          digest="$(aws ecr describe-images --repository-name "$REPOSITORY" --image-ids imageTag="$tag" --query 'imageDetails[0].imageDigest' --output text)"
+          test -n "$digest" && test "$digest" != "None"
+          echo "uri=$REGISTRY/$REPOSITORY@$digest" >> "$GITHUB_OUTPUT"
+      - name: Read current task definition
+        run: aws ecs describe-task-definition --task-definition osc-api --query taskDefinition > task-definition.json
+      - name: Render immutable image into task definition
+        id: task
+        uses: aws-actions/amazon-ecs-render-task-definition@138c24f321fdbdf7edee4a685519d253cae2cdea # v1
+        with:
+          task-definition: task-definition.json
+          container-name: osc-api-gateway
+          image: ${{ steps.image.outputs.uri }}
+      - name: Deploy and wait for stability
+        uses: aws-actions/amazon-ecs-deploy-task-definition@c465972ecbd160473f22e683363b422a5412a3de # v2
+        with:
+          task-definition: ${{ steps.task.outputs.task-definition }}
+          service: osc-api-blue
+          cluster: osc-staging
+          wait-for-service-stability: true

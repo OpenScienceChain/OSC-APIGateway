@@ -20,6 +20,8 @@ import {
 import { SubmissionState } from '../artifact/enums/submission-state.enum';
 import { Type } from 'class-transformer';
 import { ArtifactEntity } from '../artifact/artifact.entity';
+import { RecordVisibility } from '../shared/enums/record-visibility.enum';
+import { OrganizationEntity } from '../organization/organization.entity';
 
 export class RepositoryContent {
   @IsString()
@@ -70,13 +72,20 @@ export class WorkflowEntity {
   @Length(50, 3000)
   description: string;
 
+  @Column({ type: 'text', default: RecordVisibility.PRIVATE })
+  @IsEnum(RecordVisibility)
+  visibility: RecordVisibility;
+
   @Column({ type: 'simple-array', nullable: true })
   @IsArray()
   @IsString({ each: true })
   @IsOptional()
   keywords: string[];
 
-  @Column({ type: process.env.NODE_ENV === 'test' ? 'simple-json' : 'jsonb', default: '[]' })
+  @Column({
+    type: process.env.NODE_ENV === 'test' ? 'simple-json' : 'jsonb',
+    default: '[]',
+  })
   @IsArray()
   @ValidateNested({ each: true })
   @Type(() => GitHubRepositoryItem)
@@ -145,11 +154,10 @@ export class WorkflowEntity {
 
   /* --------------- Relationships --------------- */
 
-  @ManyToOne(
-    () => require('../organization/organization.entity').OrganizationEntity,
-    (org: any) => org.workflows,
-    { onDelete: 'CASCADE', nullable: false },
-  )
+  @ManyToOne(() => OrganizationEntity, (org: any) => org.workflows, {
+    onDelete: 'CASCADE',
+    nullable: false,
+  })
   @IsNotEmpty()
   organization: any;
 

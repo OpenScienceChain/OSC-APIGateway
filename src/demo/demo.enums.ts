@@ -1,0 +1,33 @@
+export enum DemoLifecycleState {
+  SCHEDULED = 'SCHEDULED',
+  PREPARING = 'PREPARING',
+  OPEN = 'OPEN',
+  READ_ONLY = 'READ_ONLY',
+  CLOSED = 'CLOSED',
+}
+
+export enum DemoOrganizationSlug {
+  NEUROSCIENCE_GATEWAY = 'neuroscience-gateway',
+  CITIZEN_SCIENCE = 'citizen-science',
+}
+
+export enum DemoEventName {
+  SESSION_STARTED = 'SESSION_STARTED',
+  STATUS_VIEWED = 'STATUS_VIEWED',
+  HISTORY_VIEWED = 'HISTORY_VIEWED',
+  SURVEY_SHOWN = 'SURVEY_SHOWN',
+  ARTIFACT_ACCEPTED = 'ARTIFACT_ACCEPTED',
+  WORKFLOW_ACCEPTED = 'WORKFLOW_ACCEPTED',
+}
+
+export enum DemoContributionType {
+  ARTIFACT = 'ARTIFACT',
+  WORKFLOW = 'WORKFLOW',
+}
+
+export enum DemoResearchContext {
+  REPRODUCIBLE_ANALYSIS = 'REPRODUCIBLE_ANALYSIS',
+  RESEARCH_DATASET = 'RESEARCH_DATASET',
+  SOFTWARE_RELEASE = 'SOFTWARE_RELEASE',
+  OTHER = 'OTHER',
+}

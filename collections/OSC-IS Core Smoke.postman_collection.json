@@ -1,0 +1,413 @@
+{
+  "info": {
+    "_postman_id": "285229f3-353b-4464-a981-8b730e8f9304",
+    "name": "OSC-IS Core Smoke",
+    "description": "Small, repeatable OSC-IS deployment contract. Run Clean-stack setup once on an empty database, then run Multi-organization smoke after each deployment.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    { "key": "adminToken", "value": "", "type": "string" },
+    { "key": "nsgToken", "value": "", "type": "string" },
+    { "key": "citizenScienceToken", "value": "", "type": "string" },
+    { "key": "nsgOrganizationId", "value": "", "type": "string" },
+    { "key": "citizenScienceOrganizationId", "value": "", "type": "string" },
+    { "key": "nsgArtifactId", "value": "", "type": "string" },
+    { "key": "citizenScienceArtifactId", "value": "", "type": "string" }
+  ],
+  "item": [
+    {
+      "name": "Public readiness",
+      "item": [
+        {
+          "name": "Health",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Gateway is healthy', () => {",
+                  "  pm.response.to.have.status(200);",
+                  "  pm.expect(pm.response.json().status).to.eql('ok');",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/health"
+          }
+        },
+        {
+          "name": "Public catalogs respond",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Artifact catalog is an array', () => {",
+                  "  pm.response.to.have.status(200);",
+                  "  pm.expect(pm.response.json()).to.be.an('array');",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/artifacts"
+          }
+        }
+      ]
+    },
+    {
+      "name": "Clean-stack setup",
+      "description": "Run once against a blank database. Password values stay in the local Postman environment and are never committed.",
+      "item": [
+        {
+          "name": "Admin login has bounded expiry",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Login returns a two-hour-or-shorter JWT', () => {",
+                  "  pm.expect(pm.response.code).to.be.oneOf([200, 201]);",
+                  "  const token = pm.response.json().token;",
+                  "  pm.expect(token).to.be.a('string').and.not.empty;",
+                  "  const segment = token.split('.')[1].replace(/-/g, '+').replace(/_/g, '/');",
+                  "  const payload = JSON.parse(atob(segment));",
+                  "  pm.expect(payload.exp).to.be.a('number');",
+                  "  pm.expect(payload.exp - payload.iat).to.be.at.most(7200);",
+                  "  pm.collectionVariables.set('adminToken', token);",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"username\": \"{{adminUsername}}\",\n  \"password\": \"{{adminPassword}}\"\n}"
+            },
+            "url": "{{baseUrl}}/users/login"
+          }
+        },
+        {
+          "name": "Create NSG: Neuroscience Gateway",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('NSG organization is created', () => {",
+                  "  pm.expect(pm.response.code).to.be.oneOf([200, 201]);",
+                  "  const organization = pm.response.json();",
+                  "  pm.expect(organization.name).to.eql('NSG: Neuroscience Gateway');",
+                  "  pm.collectionVariables.set('nsgOrganizationId', organization.id);",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                { "key": "token", "value": "{{adminToken}}", "type": "string" }
+              ]
+            },
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"NSG: Neuroscience Gateway\",\n  \"description\": \"Neuroscience research gateway organization for reproducible computational workflows and data products.\",\n  \"ledgerGroupName\": \"NSG\",\n  \"ledgerApiUserId\": \"nsg-portal\",\n  \"artifactSchemaName\": \"nsg.dataset\"\n}"
+            },
+            "url": "{{baseUrl}}/organizations"
+          }
+        },
+        {
+          "name": "Create Citizen Science",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Citizen Science organization is created', () => {",
+                  "  pm.expect(pm.response.code).to.be.oneOf([200, 201]);",
+                  "  const organization = pm.response.json();",
+                  "  pm.expect(organization.name).to.eql('Citizen Science');",
+                  "  pm.collectionVariables.set('citizenScienceOrganizationId', organization.id);",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                { "key": "token", "value": "{{adminToken}}", "type": "string" }
+              ]
+            },
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Citizen Science\",\n  \"description\": \"Community research organization for collecting, preserving, and reusing contributed datasets and related provenance.\",\n  \"ledgerGroupName\": \"CitizenScience\",\n  \"ledgerApiUserId\": \"citizen-science-portal\",\n  \"artifactSchemaName\": \"citizen.science.dataset\"\n}"
+            },
+            "url": "{{baseUrl}}/organizations"
+          }
+        },
+        {
+          "name": "Create NSG PI",
+          "request": {
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                { "key": "token", "value": "{{adminToken}}", "type": "string" }
+              ]
+            },
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"NSG Test Principal Investigator\",\n  \"email\": \"nsg-pi@example.test\",\n  \"username\": \"{{nsgUsername}}\",\n  \"password\": \"{{nsgPassword}}\",\n  \"role\": \"pi\",\n  \"organizationId\": \"{{nsgOrganizationId}}\"\n}"
+            },
+            "url": "{{baseUrl}}/users/register"
+          }
+        },
+        {
+          "name": "Create Citizen Science collaborator",
+          "request": {
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                { "key": "token", "value": "{{adminToken}}", "type": "string" }
+              ]
+            },
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Citizen Science Test Contributor\",\n  \"email\": \"citizen-contributor@example.test\",\n  \"username\": \"{{citizenScienceUsername}}\",\n  \"password\": \"{{citizenSciencePassword}}\",\n  \"role\": \"collaborator\",\n  \"organizationId\": \"{{citizenScienceOrganizationId}}\"\n}"
+            },
+            "url": "{{baseUrl}}/users/register"
+          }
+        }
+      ]
+    },
+    {
+      "name": "Multi-organization smoke",
+      "item": [
+        {
+          "name": "NSG login",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('NSG token contains organization and expiry', () => {",
+                  "  pm.expect(pm.response.code).to.be.oneOf([200, 201]);",
+                  "  const token = pm.response.json().token;",
+                  "  const segment = token.split('.')[1].replace(/-/g, '+').replace(/_/g, '/');",
+                  "  const payload = JSON.parse(atob(segment));",
+                  "  pm.expect(payload.organizationName).to.eql(pm.environment.get('nsgExpectedOrganizationName'));",
+                  "  pm.expect(payload.exp - payload.iat).to.be.at.most(7200);",
+                  "  pm.collectionVariables.set('nsgToken', token);",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"username\": \"{{nsgUsername}}\",\n  \"password\": \"{{nsgPassword}}\"\n}"
+            },
+            "url": "{{baseUrl}}/users/login"
+          }
+        },
+        {
+          "name": "NSG submits artifact",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('NSG artifact is accepted for asynchronous submission', () => {",
+                  "  pm.expect(pm.response.code).to.be.oneOf([200, 201]);",
+                  "  pm.collectionVariables.set('nsgArtifactId', pm.response.json().id);",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                { "key": "token", "value": "{{nsgToken}}", "type": "string" }
+              ]
+            },
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "X-Correlation-Id", "value": "postman-nsg-{{$guid}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"title\": \"NSG smoke artifact {{$timestamp}}\",\n  \"description\": \"A compact deployment verification dataset submitted for the Neuroscience Gateway multi-organization scenario.\",\n  \"visibility\": \"public\",\n  \"keywords\": [\"neuroscience\", \"deployment-smoke\"],\n  \"links\": [],\n  \"dois\": [],\n  \"fundingAgencies\": [],\n  \"acknowledgements\": \"\",\n  \"manifest\": [],\n  \"footprint\": \"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\n  \"submission_comment\": \"Automated NSG deployment smoke submission.\"\n}"
+            },
+            "url": "{{baseUrl}}/artifacts"
+          }
+        },
+        {
+          "name": "Citizen Science login",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Citizen Science token is organization scoped', () => {",
+                  "  pm.expect(pm.response.code).to.be.oneOf([200, 201]);",
+                  "  const token = pm.response.json().token;",
+                  "  const segment = token.split('.')[1].replace(/-/g, '+').replace(/_/g, '/');",
+                  "  const payload = JSON.parse(atob(segment));",
+                  "  pm.expect(payload.organizationName).to.eql(pm.environment.get('citizenScienceExpectedOrganizationName'));",
+                  "  pm.collectionVariables.set('citizenScienceToken', token);",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"username\": \"{{citizenScienceUsername}}\",\n  \"password\": \"{{citizenSciencePassword}}\"\n}"
+            },
+            "url": "{{baseUrl}}/users/login"
+          }
+        },
+        {
+          "name": "Citizen Science submits artifact",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Citizen Science artifact is accepted', () => {",
+                  "  pm.expect(pm.response.code).to.be.oneOf([200, 201]);",
+                  "  pm.collectionVariables.set('citizenScienceArtifactId', pm.response.json().id);",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{citizenScienceToken}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              {
+                "key": "X-Correlation-Id",
+                "value": "postman-citizen-science-{{$guid}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"title\": \"Citizen Science smoke artifact {{$timestamp}}\",\n  \"description\": \"A community-contributed dataset used to verify independent organization routing and preservation provenance.\",\n  \"visibility\": \"public\",\n  \"keywords\": [\"citizen-science\", \"dataset\"],\n  \"links\": [],\n  \"dois\": [],\n  \"fundingAgencies\": [],\n  \"acknowledgements\": \"\",\n  \"manifest\": [],\n  \"footprint\": \"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\n  \"submission_comment\": \"Automated Citizen Science smoke submission.\"\n}"
+            },
+            "url": "{{baseUrl}}/artifacts"
+          }
+        },
+        {
+          "name": "Citizen Science cannot update NSG artifact",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Cross-organization update is rejected', () => {",
+                  "  pm.expect(pm.response.code).to.be.oneOf([400, 403, 404, 412]);",
+                  "  pm.expect(JSON.stringify(pm.response.json())).to.include('authenticated organization');",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{citizenScienceToken}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "method": "PUT",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"submission_comment\": \"This update must be rejected across organizations.\",\n  \"keywords\": [\"must-not-change\"]\n}"
+            },
+            "url": "{{baseUrl}}/artifacts/{{nsgArtifactId}}"
+          }
+        },
+        {
+          "name": "Catalog contains both public smoke artifacts",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Both public smoke artifacts are discoverable', () => {",
+                  "  pm.response.to.have.status(200);",
+                  "  const titles = pm.response.json().map(item => item.title);",
+                  "  pm.expect(titles.some(title => title.startsWith('NSG smoke artifact '))).to.be.true;",
+                  "  pm.expect(titles.some(title => title.startsWith('Citizen Science smoke artifact '))).to.be.true;",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/artifacts"
+          }
+        }
+      ]
+    }
+  ]
+}

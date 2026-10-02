@@ -10,4 +10,5 @@ export enum BusinessError {
   UNAUTHORIZED,
   BAD_GATEWAY,
   GATEWAY_TIMEOUT,
+  FORBIDDEN,
 }

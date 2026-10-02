@@ -10,11 +10,13 @@ import {
   Column,
   Entity,
   ManyToOne,
+  OneToMany,
   PrimaryGeneratedColumn,
   JoinColumn,
 } from 'typeorm';
 import { Role } from '../shared/enums/role.enums';
 import { OrganizationEntity } from '../organization/organization.entity';
+import { OrganizationMembershipEntity } from '../organization/organization-membership.entity';
 
 @Entity()
 export class UserEntity {
@@ -47,12 +49,23 @@ export class UserEntity {
   @IsEnum(Role, { each: true })
   roles: Role[];
 
-  /* ---------- relación (lado MANY) ---------- */
-  @ManyToOne(
-    () => OrganizationEntity,
-    (org) => org.users,
-    { nullable: true, onDelete: 'CASCADE' },
+  @Column({ default: false })
+  platformAdmin: boolean;
+
+  @Column({ default: 0 })
+  authVersion: number;
+
+  @OneToMany(
+    () => OrganizationMembershipEntity,
+    (membership) => membership.user,
   )
+  memberships: OrganizationMembershipEntity[];
+
+  // Retained temporarily so existing users can be migrated to memberships.
+  @ManyToOne(() => OrganizationEntity, (org) => org.users, {
+    nullable: true,
+    onDelete: 'SET NULL',
+  })
   @JoinColumn()
   organization: OrganizationEntity | null;
 }

@@ -27,6 +27,10 @@ export class BusinessErrorsInterceptor implements NestInterceptor {
           throw new HttpException(error.message, HttpStatus.BAD_GATEWAY);
         else if (error.type === BusinessError.GATEWAY_TIMEOUT)
           throw new HttpException(error.message, HttpStatus.GATEWAY_TIMEOUT);
+        else if (error.type === BusinessError.UNAUTHORIZED)
+          throw new HttpException(error.message, HttpStatus.UNAUTHORIZED);
+        else if (error.type === BusinessError.FORBIDDEN)
+          throw new HttpException(error.message, HttpStatus.FORBIDDEN);
         else throw error;
       }),
     );

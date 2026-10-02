@@ -1,6 +1,11 @@
 import { ManifestItem } from '../artifact.entity';
-import { SubmissionState } from '../enums/submission-state.enum';
-import { IsArray, IsNotEmpty, IsOptional, IsString, Length } from 'class-validator';
+import {
+  IsArray,
+  IsNotEmpty,
+  IsOptional,
+  IsString,
+  Length,
+} from 'class-validator';
 
 // DTO for PI / Collaborator updates: all fields optional except title/description are disallowed
 export class UpdateArtifactUserDto {

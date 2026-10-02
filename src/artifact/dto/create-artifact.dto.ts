@@ -8,11 +8,12 @@ import {
   IsBoolean,
   IsEnum,
   ValidateNested,
-  Matches
+  Matches,
 } from 'class-validator';
 import { SubmissionState } from '../enums/submission-state.enum';
 import { ManifestItem } from '../artifact.entity';
 import { Type } from 'class-transformer';
+import { RecordVisibility } from '../../shared/enums/record-visibility.enum';
 
 export class CreateArtifactDto {
   @IsString()
@@ -24,6 +25,10 @@ export class CreateArtifactDto {
   @IsNotEmpty()
   @Length(50, 3000)
   description: string;
+
+  @IsEnum(RecordVisibility)
+  @IsOptional()
+  visibility?: RecordVisibility;
 
   @IsArray()
   @IsString({ each: true })
@@ -68,16 +73,16 @@ export class CreateArtifactDto {
   @IsDate()
   @IsOptional()
   submittedAt?: Date;
-  
+
   @IsBoolean()
   @IsOptional()
   verified?: boolean;
-  
+
   @IsDate()
   @IsOptional()
   lastTimeVerified?: Date;
-  
+
   @IsEnum(SubmissionState)
   @IsOptional()
   submissionState?: SubmissionState;
-} 
+}

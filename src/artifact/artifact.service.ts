@@ -1,7 +1,7 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, Optional } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { ArtifactEntity } from './artifact.entity';
-import { Repository } from 'typeorm';
+import { IsNull, Repository } from 'typeorm';
 import {
   BusinessError,
   BusinessLogicException,
@@ -18,11 +18,15 @@ import { SubmissionState } from './enums/submission-state.enum';
 import { RabbitMQService } from '../messaging/rabbitmq.service';
 import { GhwService } from './ghw.service';
 import { randomUUID } from 'crypto';
+import { OutboxService } from '../messaging/outbox.service';
+import { RecordVisibility } from '../shared/enums/record-visibility.enum';
 
 // Definir una interfaz para la información del creador del artefacto
 interface SubmitterInfo {
+  userId?: string;
   username: string;
   email: string;
+  organizationId?: string;
 }
 
 @Injectable()
@@ -36,10 +40,11 @@ export class ArtifactService {
     private readonly organizationRepository: Repository<OrganizationEntity>,
     private readonly rabbitMQService: RabbitMQService,
     private readonly ghwService: GhwService,
+    @Optional() private readonly outboxService?: OutboxService,
   ) {}
 
   // Private helper methods to reduce code duplication
-  
+
   /**
    * Validates if the provided ID is a valid UUID
    * @param id The ID to validate
@@ -60,18 +65,35 @@ export class ArtifactService {
    * @returns The organization entity
    * @throws BusinessLogicException if no organization is found
    */
-  private async findOrganizationOrThrow(): Promise<OrganizationEntity> {
-    const organization = await this.organizationRepository.findOne({
-      where: {}
-    });
-    
+  private async findOrganizationOrThrow(
+    organizationId?: string,
+  ): Promise<OrganizationEntity> {
+    let organization: OrganizationEntity | null;
+    if (organizationId) {
+      this.validateId(organizationId, 'organizationId');
+      organization = await this.organizationRepository.findOne({
+        where: { id: organizationId },
+      });
+    } else {
+      const organizations = await this.organizationRepository.find({ take: 2 });
+      organization = organizations.length === 1 ? organizations[0] : null;
+      if (organizations.length > 1) {
+        throw new BusinessLogicException(
+          'organizationId is required when more than one organization exists',
+          BusinessError.PRECONDITION_FAILED,
+        );
+      }
+    }
+
     if (!organization) {
       throw new BusinessLogicException(
-        'No organization exists in the system',
+        organizationId
+          ? 'The selected organization does not exist'
+          : 'No organization exists in the system',
         BusinessError.NOT_FOUND,
       );
     }
-    
+
     return organization;
   }
 
@@ -83,29 +105,93 @@ export class ArtifactService {
    * @throws BusinessLogicException if the artifact is not found
    */
   private async findArtifactOrThrow(
-    id: string, 
-    includeRelations: boolean = false
+    id: string,
+    includeRelations: boolean = false,
   ): Promise<ArtifactEntity> {
     this.validateId(id, 'artifactId');
-    
+
     const queryOptions: any = {
-      where: { id }
+      where: { id },
     };
-    
+
     if (includeRelations) {
       queryOptions.relations = ['organization'];
     }
-    
+
     const artifact = await this.artifactRepository.findOne(queryOptions);
-    
+
     if (!artifact) {
       throw new BusinessLogicException(
         'The artifact with the provided id does not exist',
         BusinessError.NOT_FOUND,
       );
     }
-    
+
     return artifact;
+  }
+
+  private assertOrganizationAccess(
+    artifact: ArtifactEntity,
+    organizationId?: string,
+  ): void {
+    if (organizationId && artifact.organization?.id !== organizationId) {
+      throw new BusinessLogicException(
+        'The artifact does not belong to the authenticated organization',
+        BusinessError.FORBIDDEN,
+      );
+    }
+  }
+
+  private assertReadAccess(
+    artifact: ArtifactEntity,
+    organizationId?: string,
+  ): void {
+    if (artifact.visibility === RecordVisibility.PUBLIC) return;
+    if (!organizationId || artifact.organization?.id !== organizationId) {
+      throw new BusinessLogicException(
+        'The artifact is private to another organization',
+        BusinessError.FORBIDDEN,
+      );
+    }
+  }
+
+  private organizationContext(organization: OrganizationEntity) {
+    return {
+      id: organization.id,
+      name: organization.name,
+      ...(organization.slug && { slug: organization.slug }),
+      ...(organization.mspId && { mspId: organization.mspId }),
+      ...(organization.ledgerGroupName && {
+        ledgerGroupName: organization.ledgerGroupName,
+      }),
+      ...(organization.ledgerApiUserId && {
+        ledgerApiUserId: organization.ledgerApiUserId,
+      }),
+      ...(organization.artifactSchemaName && {
+        artifactSchemaName: organization.artifactSchemaName,
+      }),
+    };
+  }
+
+  private requestMetadata(
+    authenticatedUserId: string | undefined,
+    organizationId: string,
+    correlationId: string,
+    operation: 'artifact.create' | 'artifact.update',
+  ): import('../messaging/rabbitmq.service').TransactionRequestMetadata {
+    if (!authenticatedUserId) {
+      throw new BusinessLogicException(
+        'Authenticated user identity is required for ledger operations',
+        BusinessError.UNAUTHORIZED,
+      );
+    }
+    return {
+      authenticatedUserId,
+      organizationId,
+      correlationId,
+      operation,
+      requestedAt: new Date().toISOString(),
+    };
   }
 
   /**
@@ -113,15 +199,20 @@ export class ArtifactService {
    * @param createArtifactDto The DTO to validate
    * @throws BusinessLogicException if validation fails
    */
-  private validateCreateArtifactDto(createArtifactDto: CreateArtifactDto): void {
+  private validateCreateArtifactDto(
+    createArtifactDto: CreateArtifactDto,
+  ): void {
     if (!createArtifactDto.title || createArtifactDto.title.length < 3) {
       throw new BusinessLogicException(
         'The title of the artifact is required and must be at least 3 characters long',
         BusinessError.PRECONDITION_FAILED,
       );
     }
-    
-    if (!createArtifactDto.description || createArtifactDto.description.length < 50) {
+
+    if (
+      !createArtifactDto.description ||
+      createArtifactDto.description.length < 50
+    ) {
       throw new BusinessLogicException(
         'The description must be at least 50 characters long',
         BusinessError.BAD_REQUEST,
@@ -139,7 +230,10 @@ export class ArtifactService {
       );
     }
 
-    if (!createArtifactDto.footprint || !/^[a-f0-9]{64}$/.test(createArtifactDto.footprint)) {
+    if (
+      !createArtifactDto.footprint ||
+      !/^[a-f0-9]{64}$/.test(createArtifactDto.footprint)
+    ) {
       throw new BusinessLogicException(
         'A valid SHA-256 footprint hash is required (64 hex characters).',
         BusinessError.PRECONDITION_FAILED,
@@ -153,7 +247,7 @@ export class ArtifactService {
         BusinessError.BAD_REQUEST,
       );
     }
-    
+
     const totalLinksLength = createArtifactDto.links.join('').length;
     if (totalLinksLength > 2000) {
       throw new BusinessLogicException(
@@ -161,7 +255,7 @@ export class ArtifactService {
         BusinessError.BAD_REQUEST,
       );
     }
-    
+
     // Validate each link
     for (const link of createArtifactDto.links) {
       if (!validator.isURL(link)) {
@@ -178,12 +272,15 @@ export class ArtifactService {
    * @param title The title to check
    * @throws BusinessLogicException if an artifact with the same title exists
    */
-  private async checkTitleUniqueness(title: string, organization: OrganizationEntity): Promise<void> {
+  private async checkTitleUniqueness(
+    title: string,
+    organization: OrganizationEntity,
+  ): Promise<void> {
     const existingArtifact = await this.artifactRepository.findOne({
-      where: { 
+      where: {
         title,
-        organization: { id: organization.id }
-      }
+        organization: { id: organization.id },
+      },
     });
 
     if (existingArtifact) {
@@ -199,7 +296,9 @@ export class ArtifactService {
    * @param updateArtifactDto The DTO to validate
    * @throws BusinessLogicException if validation fails
    */
-  private validateUpdateArtifactDto(updateArtifactDto: UpdateArtifactWorkerDto): void {
+  private validateUpdateArtifactDto(
+    updateArtifactDto: UpdateArtifactWorkerDto,
+  ): void {
     if (
       'title' in updateArtifactDto ||
       'contributor' in updateArtifactDto ||
@@ -226,12 +325,22 @@ export class ArtifactService {
    * @param updateStatusDto The DTO to validate
    * @throws BusinessLogicException if validation fails
    */
-  private validateUpdateStatusDto(updateStatusDto: UpdateArtifactWorkerDto): void {
-    const allowedFields = ['submissionState', 'blockchainTxId', 'peerId', 'submissionError', 'updatedAt'];
+  private validateUpdateStatusDto(
+    updateStatusDto: UpdateArtifactWorkerDto,
+  ): void {
+    const allowedFields = [
+      'submissionState',
+      'blockchainTxId',
+      'peerId',
+      'submissionError',
+      'updatedAt',
+    ];
     const receivedFields = Object.keys(updateStatusDto);
-    
-    const forbiddenFields = receivedFields.filter(field => !allowedFields.includes(field));
-    
+
+    const forbiddenFields = receivedFields.filter(
+      (field) => !allowedFields.includes(field),
+    );
+
     if (forbiddenFields.length > 0) {
       throw new BusinessLogicException(
         `Cannot update the following fields in status update: ${forbiddenFields.join(', ')}. Only allowed: ${allowedFields.join(', ')}`,
@@ -241,13 +350,23 @@ export class ArtifactService {
   }
 
   // Update artifact details (PI / Collaborator)
-  async updateUser(id: string, dto: UpdateArtifactUserDto, contributorEmail?: string, correlationId?: string): Promise<ArtifactEntity> {
+  async updateUser(
+    id: string,
+    dto: UpdateArtifactUserDto,
+    contributorEmail?: string,
+    correlationId?: string,
+    organizationId?: string,
+    authenticatedUserId?: string,
+  ): Promise<ArtifactEntity> {
     // Validate ID
     this.validateId(id, 'artifactId');
 
     // Disallow updating title or description if somehow included
     if ('title' in dto || 'description' in dto) {
-      throw new BusinessLogicException('Cannot update title or description', BusinessError.BAD_REQUEST);
+      throw new BusinessLogicException(
+        'Cannot update title or description',
+        BusinessError.BAD_REQUEST,
+      );
     }
 
     // Require submission_comment on every user update and validate bounds
@@ -263,7 +382,8 @@ export class ArtifactService {
     }
 
     // Fetch current artifact for validation purposes (do not persist changes here)
-    const currentArtifact = await this.findArtifactOrThrow(id, false);
+    const currentArtifact = await this.findArtifactOrThrow(id, true);
+    this.assertOrganizationAccess(currentArtifact, organizationId);
 
     // Re‐run create validations on a simulated merged artefact to ensure constraints hold
     this.validateCreateArtifactDto({
@@ -274,18 +394,22 @@ export class ArtifactService {
     } as any);
 
     // Build the patch with only provided properties
-    const patch: import('../messaging/rabbitmq.service').ArtifactUpdateCommandPatch = {};
+    const patch: import('../messaging/rabbitmq.service').ArtifactUpdateCommandPatch =
+      {};
     // Always include chaincode-mandatory fields from the existing artifact
     patch.title = currentArtifact.title;
     patch.description = currentArtifact.description;
     if (contributorEmail !== undefined) patch.contributor = contributorEmail;
     const dtoAny: any = dto as any;
-    if (dtoAny.submission_comment !== undefined) patch.submission_comment = dtoAny.submission_comment;
+    if (dtoAny.submission_comment !== undefined)
+      patch.submission_comment = dtoAny.submission_comment;
     if (dtoAny.keywords !== undefined) patch.keywords = dtoAny.keywords;
     if (dtoAny.links !== undefined) patch.links = dtoAny.links;
     if (dtoAny.dois !== undefined) patch.dois = dtoAny.dois;
-    if (dtoAny.fundingAgencies !== undefined) patch.fundingAgencies = dtoAny.fundingAgencies;
-    if (dtoAny.acknowledgements !== undefined) patch.acknowledgements = dtoAny.acknowledgements;
+    if (dtoAny.fundingAgencies !== undefined)
+      patch.fundingAgencies = dtoAny.fundingAgencies;
+    if (dtoAny.acknowledgements !== undefined)
+      patch.acknowledgements = dtoAny.acknowledgements;
     if (dtoAny.manifest !== undefined) patch.manifest = dtoAny.manifest;
     if (dtoAny.footprint !== undefined) patch.footprint = dtoAny.footprint;
     // User is not allowed to change status fields
@@ -295,60 +419,96 @@ export class ArtifactService {
     if (patch.keywords !== undefined) currentArtifact.keywords = patch.keywords;
     if (patch.links !== undefined) currentArtifact.links = patch.links;
     if (patch.dois !== undefined) currentArtifact.dois = patch.dois;
-    if (patch.fundingAgencies !== undefined) currentArtifact.fundingAgencies = patch.fundingAgencies;
-    if (patch.acknowledgements !== undefined) currentArtifact.acknowledgements = patch.acknowledgements;
-    if (patch.manifest !== undefined) currentArtifact.manifest = patch.manifest as any;
-    if (patch.footprint !== undefined) currentArtifact.footprint = patch.footprint;
+    if (patch.fundingAgencies !== undefined)
+      currentArtifact.fundingAgencies = patch.fundingAgencies;
+    if (patch.acknowledgements !== undefined)
+      currentArtifact.acknowledgements = patch.acknowledgements;
+    if (patch.manifest !== undefined)
+      currentArtifact.manifest = patch.manifest as any;
+    if (patch.footprint !== undefined)
+      currentArtifact.footprint = patch.footprint;
 
-    const saved = await this.artifactRepository.save(currentArtifact);
+    const requestCorrelationId = correlationId || randomUUID();
+    const updateCommand: import('../messaging/rabbitmq.service').ArtifactUpdateCommand =
+      {
+        contractVersion: 'v3',
+        artifactId: id,
+        organization: this.organizationContext(currentArtifact.organization),
+        patch,
+        contributor: contributorEmail,
+        correlationId: requestCorrelationId,
+        request: this.requestMetadata(
+          authenticatedUserId,
+          currentArtifact.organization.id,
+          requestCorrelationId,
+          'artifact.update',
+        ),
+      };
 
-    // Publish artifact.update command to RabbitMQ asynchronously (fire-and-forget)
-    const updateCommand: import('../messaging/rabbitmq.service').ArtifactUpdateCommand = {
-      artifactId: id,
-      patch,
-      contributor: contributorEmail,
-      ...(correlationId !== undefined && { correlationId }),
-    };
-    this.rabbitMQService.publishArtifactUpdate(updateCommand).catch((err) => {
-      this.logger.error(`Failed to publish artifact.update for ${id} [corrId=${correlationId ?? 'none'}]: ${err?.message ?? err}`);
-    });
+    let saved: ArtifactEntity;
+    if (this.outboxService) {
+      saved = await this.artifactRepository.manager.transaction(
+        async (manager) => {
+          const persisted = await manager.save(ArtifactEntity, currentArtifact);
+          await this.outboxService.enqueue(
+            manager,
+            'artifact.update',
+            id,
+            { ...updateCommand },
+            requestCorrelationId,
+          );
+          return persisted;
+        },
+      );
+      void this.outboxService.dispatchPending();
+    } else {
+      saved = await this.artifactRepository.save(currentArtifact);
+      this.rabbitMQService.publishArtifactUpdate(updateCommand).catch((err) => {
+        this.logger.error(
+          `Failed to publish artifact.update for ${id} [corrId=${correlationId ?? 'none'}]: ${err?.message ?? err}`,
+        );
+      });
+    }
 
     return saved;
   }
 
   // Get All Artifacts - Return minimal fields
-  async findAll(): Promise<ListArtifactDto[]> {
-    const organization = await this.findOrganizationOrThrow();
-
+  async findAll(organizationId?: string): Promise<ListArtifactDto[]> {
     const artifacts = await this.artifactRepository.find({
-      where: { organization: { id: organization.id } }
+      where: organizationId
+        ? [
+            { visibility: RecordVisibility.PUBLIC, archivedAt: IsNull() },
+            { organization: { id: organizationId }, archivedAt: IsNull() },
+          ]
+        : { visibility: RecordVisibility.PUBLIC, archivedAt: IsNull() },
     });
 
-    return artifacts.map(artifact => ({
+    return artifacts.map((artifact) => ({
       id: artifact.id,
       title: artifact.title,
       description: artifact.description,
+      visibility: artifact.visibility,
       keywords: artifact.keywords,
       footprint: artifact.footprint,
       submittedAt: artifact.submittedAt,
       verified: artifact.verified,
-      updatedAt: artifact.updatedAt
+      updatedAt: artifact.updatedAt,
     }));
   }
 
   // Get One Artifact - Return all fields
-  async findOne(id: string): Promise<GetArtifactDto> {
-    // First, verify that an organization exists
-    await this.findOrganizationOrThrow();
-    
+  async findOne(id: string, organizationId?: string): Promise<GetArtifactDto> {
     // Find the artifact with the organization relation
     const artifact = await this.findArtifactOrThrow(id, true);
-    
+    this.assertReadAccess(artifact, organizationId);
+
     // Transform the result to include all fields
     return {
       id: artifact.id,
       title: artifact.title,
       description: artifact.description,
+      visibility: artifact.visibility,
       submission_comment: artifact.submission_comment,
       keywords: artifact.keywords,
       footprint: artifact.footprint,
@@ -366,62 +526,113 @@ export class ArtifactService {
       blockchainTxId: artifact.blockchainTxId,
       peerId: artifact.peerId,
       submissionError: artifact.submissionError,
-      organization: artifact.organization ? {
-        name: artifact.organization.name,
-        // Do not include other organization fields like description, id
-      } : undefined,
+      organization: artifact.organization
+        ? {
+            name: artifact.organization.name,
+            // Do not include other organization fields like description, id
+          }
+        : undefined,
     };
   }
 
   // --- History via GHW ---
   async getHistory(
     id: string,
-    params: { offset?: string; limit?: string; order?: 'asc'|'desc'; includeValue?: string },
+    params: {
+      offset?: string;
+      limit?: string;
+      order?: 'asc' | 'desc';
+      includeValue?: string;
+    },
     correlationId?: string,
+    organizationId?: string,
   ): Promise<any> {
-    this.validateId(id, 'artifactId');
+    const artifact = await this.findArtifactOrThrow(id, true);
+    this.assertReadAccess(artifact, organizationId);
     const artifactId = id.toLowerCase();
 
     const offset = Math.max(0, Number(params.offset ?? 0) || 0);
     let limit = Number(params.limit ?? 100) || 100;
     if (limit < 1) limit = 1;
     if (limit > 500) limit = 500;
-    const order = (params.order === 'asc' || params.order === 'desc') ? params.order : 'desc';
-    const includeValue = params.includeValue === undefined ? true : String(params.includeValue).toLowerCase() !== 'false';
+    const order =
+      params.order === 'asc' || params.order === 'desc' ? params.order : 'desc';
+    const includeValue =
+      params.includeValue === undefined
+        ? true
+        : String(params.includeValue).toLowerCase() !== 'false';
 
     const corr = correlationId || randomUUID();
 
     try {
-      const resp = await this.ghwService.fetchHistory({ artifactId, offset, limit, order, includeValue }, corr);
+      const resp = await this.ghwService.fetchHistory(
+        {
+          artifactId,
+          assetType: 'artifact',
+          organizationId: artifact.organization?.id || organizationId,
+          offset,
+          limit,
+          order,
+          includeValue,
+        },
+        corr,
+      );
       return {
         ...resp,
         nextOffset: resp?.hasMore ? offset + limit : undefined,
       };
     } catch (err: any) {
-      if (err?.message === 'CONNECT_TIMEOUT' || err?.message === 'READ_TIMEOUT') {
-        throw new BusinessLogicException('Upstream timeout contacting GHW', BusinessError.GATEWAY_TIMEOUT);
+      if (
+        err?.message === 'CONNECT_TIMEOUT' ||
+        err?.message === 'READ_TIMEOUT'
+      ) {
+        throw new BusinessLogicException(
+          'Upstream timeout contacting GHW',
+          BusinessError.GATEWAY_TIMEOUT,
+        );
       }
       const status = err?.statusCode;
       if (status) {
-        throw new BusinessLogicException(`GHW error ${status}`, BusinessError.BAD_GATEWAY);
+        throw new BusinessLogicException(
+          `GHW error ${status}`,
+          BusinessError.BAD_GATEWAY,
+        );
       }
       throw new BusinessLogicException('GHW error', BusinessError.BAD_GATEWAY);
     }
   }
 
-  async refreshHistory(id: string, correlationId?: string): Promise<any> {
-    this.validateId(id, 'artifactId');
+  async refreshHistory(
+    id: string,
+    correlationId?: string,
+    organizationId?: string,
+  ): Promise<any> {
+    const artifact = await this.findArtifactOrThrow(id, true);
+    this.assertReadAccess(artifact, organizationId);
     const artifactId = id.toLowerCase();
     const corr = correlationId || randomUUID();
     try {
-      return await this.ghwService.refresh(artifactId, corr);
+      return await this.ghwService.refresh(
+        artifactId,
+        corr,
+        artifact.organization?.id || organizationId,
+      );
     } catch (err: any) {
-      if (err?.message === 'CONNECT_TIMEOUT' || err?.message === 'READ_TIMEOUT') {
-        throw new BusinessLogicException('Upstream timeout contacting GHW', BusinessError.GATEWAY_TIMEOUT);
+      if (
+        err?.message === 'CONNECT_TIMEOUT' ||
+        err?.message === 'READ_TIMEOUT'
+      ) {
+        throw new BusinessLogicException(
+          'Upstream timeout contacting GHW',
+          BusinessError.GATEWAY_TIMEOUT,
+        );
       }
       const status = err?.statusCode;
       if (status) {
-        throw new BusinessLogicException(`GHW error ${status}`, BusinessError.BAD_GATEWAY);
+        throw new BusinessLogicException(
+          `GHW error ${status}`,
+          BusinessError.BAD_GATEWAY,
+        );
       }
       throw new BusinessLogicException('GHW error', BusinessError.BAD_GATEWAY);
     }
@@ -432,8 +643,8 @@ export class ArtifactService {
     createArtifactDto: CreateArtifactDto,
     submitterInfo: SubmitterInfo,
     correlationId?: string,
+    recordId?: string,
   ): Promise<ListArtifactDto> {
-
     // Validate the creator's information
     if (!submitterInfo.email || !validator.isEmail(submitterInfo.email)) {
       throw new BusinessLogicException(
@@ -441,26 +652,37 @@ export class ArtifactService {
         BusinessError.PRECONDITION_FAILED,
       );
     }
-    
+
     if (!submitterInfo.username || submitterInfo.username.trim() === '') {
       throw new BusinessLogicException(
         'Invalid submitter username provided.',
         BusinessError.PRECONDITION_FAILED,
       );
     }
-  
+
+    if (!submitterInfo.userId) {
+      throw new BusinessLogicException(
+        'Authenticated user identity is required for ledger operations',
+        BusinessError.UNAUTHORIZED,
+      );
+    }
+
     // Validate the DTO
     this.validateCreateArtifactDto(createArtifactDto);
-    
+
     // Find the organization
-    const organization = await this.findOrganizationOrThrow();
-    
+    const organization = await this.findOrganizationOrThrow(
+      submitterInfo.organizationId,
+    );
+
     // Check if an artifact with this title already exists for this organization
     await this.checkTitleUniqueness(createArtifactDto.title, organization);
-        
+
     // Create new artifact
     const newArtifact = this.artifactRepository.create({
+      ...(recordId ? { id: recordId } : {}),
       ...createArtifactDto,
+      visibility: createArtifactDto.visibility ?? RecordVisibility.PRIVATE,
       organization: organization,
       submitterEmail: submitterInfo.email,
       submitterUsername: submitterInfo.username,
@@ -468,90 +690,139 @@ export class ArtifactService {
       submissionState: SubmissionState.PENDING,
     });
 
-    // Save the new artifact
-    const savedArtifact = await this.artifactRepository.save(newArtifact);
+    const requestCorrelationId = correlationId || randomUUID();
+    let submitCommand: import('../messaging/rabbitmq.service').ArtifactSubmitCommand;
+    let savedArtifact: ArtifactEntity;
 
-    // Publish artifact.submit command
-    const submitCommand: import('../messaging/rabbitmq.service').ArtifactSubmitCommand = {
-      artifactId: savedArtifact.id,
-      manifest: savedArtifact.manifest,
-      title: savedArtifact.title,
-      footprint: savedArtifact.footprint,
-      description: savedArtifact.description,
-      submission_comment: savedArtifact.submission_comment,
-      keywords: savedArtifact.keywords,
-      links: savedArtifact.links,
-      dois: savedArtifact.dois,
-      fundingAgencies: savedArtifact.fundingAgencies,
-      acknowledgements: savedArtifact.acknowledgements,
-      contributor: submitterInfo.email,
-      ...(correlationId !== undefined && { correlationId }),
-    };
-
-    this.rabbitMQService.publishArtifactSubmit(submitCommand).catch((err) => {
-      this.logger.error(`Failed to publish artifact.submit for ${savedArtifact.id} [corrId=${correlationId ?? 'none'}]: ${err?.message ?? err}`);
-    });
+    if (this.outboxService) {
+      savedArtifact = await this.artifactRepository.manager.transaction(
+        async (manager) => {
+          const persisted = await manager.save(ArtifactEntity, newArtifact);
+          submitCommand = this.artifactSubmitCommand(
+            persisted,
+            organization,
+            submitterInfo.email,
+            submitterInfo.userId,
+            requestCorrelationId,
+          );
+          await this.outboxService.enqueue(
+            manager,
+            'artifact.submit',
+            persisted.id,
+            { ...submitCommand },
+            requestCorrelationId,
+          );
+          return persisted;
+        },
+      );
+      void this.outboxService.dispatchPending();
+    } else {
+      savedArtifact = await this.artifactRepository.save(newArtifact);
+      submitCommand = this.artifactSubmitCommand(
+        savedArtifact,
+        organization,
+        submitterInfo.email,
+        submitterInfo.userId,
+        requestCorrelationId,
+      );
+      this.rabbitMQService.publishArtifactSubmit(submitCommand).catch((err) => {
+        this.logger.error(
+          `Failed to publish artifact.submit for ${savedArtifact.id} [corrId=${correlationId ?? 'none'}]: ${err?.message ?? err}`,
+        );
+      });
+    }
 
     return {
       id: savedArtifact.id,
       title: savedArtifact.title,
       description: savedArtifact.description,
+      visibility: savedArtifact.visibility,
       keywords: savedArtifact.keywords,
       footprint: savedArtifact.footprint,
       submittedAt: savedArtifact.submittedAt,
       verified: savedArtifact.verified,
-      updatedAt: savedArtifact.updatedAt
+      updatedAt: savedArtifact.updatedAt,
+    };
+  }
+
+  private artifactSubmitCommand(
+    artifact: ArtifactEntity,
+    organization: OrganizationEntity,
+    contributor: string,
+    authenticatedUserId: string,
+    correlationId: string,
+  ): import('../messaging/rabbitmq.service').ArtifactSubmitCommand {
+    return {
+      contractVersion: 'v3',
+      artifactId: artifact.id,
+      organization: this.organizationContext(organization),
+      manifest: artifact.manifest,
+      title: artifact.title,
+      visibility: artifact.visibility,
+      footprint: artifact.footprint,
+      description: artifact.description,
+      submission_comment: artifact.submission_comment,
+      keywords: artifact.keywords,
+      links: artifact.links,
+      dois: artifact.dois,
+      fundingAgencies: artifact.fundingAgencies,
+      acknowledgements: artifact.acknowledgements,
+      contributor,
+      correlationId,
+      request: this.requestMetadata(
+        authenticatedUserId,
+        organization.id,
+        correlationId,
+        'artifact.create',
+      ),
     };
   }
 
   // Update an Artifact (General Purpose - Limited fields)
-  async update(id: string, updateArtifactDto: UpdateArtifactWorkerDto): Promise<ArtifactEntity> {
-    // First, verify that an organization exists
-    await this.findOrganizationOrThrow();
-
+  async update(
+    id: string,
+    updateArtifactDto: UpdateArtifactWorkerDto,
+  ): Promise<ArtifactEntity> {
     // Find the artifact with the organization relation
     const artifact = await this.findArtifactOrThrow(id, true);
-    
+
     // Validate update fields
     this.validateUpdateArtifactDto(updateArtifactDto);
-    
+
     // Apply the updates
     Object.assign(artifact, updateArtifactDto);
     return await this.artifactRepository.save(artifact);
   }
 
-  // Delete an Artifact
-  async delete(id: string): Promise<void> {
-    // First, verify that an organization exists
-    await this.findOrganizationOrThrow();
-
-    // Find the artifact
-    const artifact = await this.findArtifactOrThrow(id);
-    
-    // Use createQueryBuilder().delete() instead of remove to respect cascades
-    await this.artifactRepository.createQueryBuilder()
-      .delete()
-      .where("id = :id", { id: artifact.id })
-      .execute();
+  // Archive an Artifact while retaining its provenance links.
+  async delete(id: string, organizationId?: string): Promise<void> {
+    const artifact = await this.findArtifactOrThrow(id, true);
+    this.assertOrganizationAccess(artifact, organizationId);
+    artifact.visibility = RecordVisibility.PRIVATE;
+    artifact.archivedAt = new Date();
+    await this.artifactRepository.save(artifact);
   }
 
-  async updateWorker(id: string, updateStatusDto: UpdateArtifactWorkerDto): Promise<ArtifactEntity> {
+  async updateWorker(
+    id: string,
+    updateStatusDto: UpdateArtifactWorkerDto,
+  ): Promise<ArtifactEntity> {
     const artifact = await this.findArtifactOrThrow(id);
-    
+
     // Validate that only allowed fields are being updated
     this.validateUpdateStatusDto(updateStatusDto);
-    
+
     // Update the artifact with the new status information
     if (updateStatusDto.submissionState !== undefined) {
       artifact.submissionState = updateStatusDto.submissionState;
     }
-    
+
     // submittedAt cannot be modified; ignore if present
 
     if (updateStatusDto.blockchainTxId) {
       artifact.blockchainTxId = updateStatusDto.blockchainTxId;
     }
-    
+
     if (updateStatusDto.peerId) {
       artifact.peerId = updateStatusDto.peerId;
     }
@@ -571,9 +842,14 @@ export class ArtifactService {
     }
 
     // On FAILED, ensure submissionError is set with a concise message and DO NOT change updatedAt
-    if (updateStatusDto.submissionState === SubmissionState.FAILED && updateStatusDto.submissionError) {
+    if (
+      updateStatusDto.submissionState === SubmissionState.FAILED &&
+      updateStatusDto.submissionError
+    ) {
       const isUpdateEvent = !!updateStatusDto.updatedAt; // updatedAt present implies update event
-      const prefix = isUpdateEvent ? 'Error updating the artifact. Details: ' : 'Error submitting the artifact. Details: ';
+      const prefix = isUpdateEvent
+        ? 'Error updating the artifact. Details: '
+        : 'Error submitting the artifact. Details: ';
       artifact.submissionError = `${prefix}${updateStatusDto.submissionError}`;
     }
 

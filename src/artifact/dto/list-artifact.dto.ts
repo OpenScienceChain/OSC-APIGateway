@@ -1,4 +1,12 @@
-import { IsString, IsUUID, IsDate, IsOptional, IsBoolean, IsArray } from 'class-validator';
+import {
+  IsString,
+  IsUUID,
+  IsDate,
+  IsOptional,
+  IsBoolean,
+  IsArray,
+} from 'class-validator';
+import { RecordVisibility } from '../../shared/enums/record-visibility.enum';
 
 export class ListArtifactDto {
   @IsUUID()
@@ -9,6 +17,8 @@ export class ListArtifactDto {
 
   @IsString()
   description: string;
+
+  visibility: RecordVisibility;
 
   @IsArray()
   @IsString({ each: true })
@@ -29,4 +39,4 @@ export class ListArtifactDto {
   @IsDate()
   @IsOptional()
   updatedAt: Date;
-} 
+}

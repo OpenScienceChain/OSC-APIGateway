@@ -17,6 +17,7 @@ import { SubmissionState } from '../enums/submission-state.enum';
 import { GetOrganizationDto } from './get-organization.dto';
 import { ManifestItem } from '../artifact.entity';
 import { Type } from 'class-transformer';
+import { RecordVisibility } from '../../shared/enums/record-visibility.enum';
 
 export class GetArtifactDto {
   @IsUUID()
@@ -27,6 +28,9 @@ export class GetArtifactDto {
 
   @IsString()
   description: string;
+
+  @IsEnum(RecordVisibility)
+  visibility: RecordVisibility;
 
   @IsString()
   @Length(20, 1000)
@@ -109,4 +113,4 @@ export class GetArtifactDto {
     name: string;
     username: string;
   };
-} 
+}

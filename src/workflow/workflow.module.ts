@@ -10,7 +10,11 @@ import { ConfigModule } from '@nestjs/config';
 
 @Module({
   imports: [
-    TypeOrmModule.forFeature([WorkflowEntity, OrganizationEntity, ArtifactEntity]),
+    TypeOrmModule.forFeature([
+      WorkflowEntity,
+      OrganizationEntity,
+      ArtifactEntity,
+    ]),
     MessagingModule,
     ConfigModule,
   ],

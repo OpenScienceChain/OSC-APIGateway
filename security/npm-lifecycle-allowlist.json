@@ -1,0 +1,29 @@
+{
+  "packages": {
+    "@nestjs/core": {
+      "versions": [
+        "10.4.20"
+      ],
+      "execute": false,
+      "scripts": {
+        "postinstall": "opencollective || exit 0"
+      }
+    },
+    "bcrypt": {
+      "versions": [
+        "6.0.0"
+      ],
+      "execute": true,
+      "scripts": {
+        "install": "node-gyp-build"
+      }
+    },
+    "fsevents": {
+      "versions": [
+        "2.3.3"
+      ],
+      "execute": false,
+      "scripts": {}
+    }
+  }
+}

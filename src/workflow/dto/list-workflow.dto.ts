@@ -1,5 +1,13 @@
-import { IsString, IsUUID, IsDate, IsOptional, IsArray, IsEnum } from 'class-validator';
+import {
+  IsString,
+  IsUUID,
+  IsDate,
+  IsOptional,
+  IsArray,
+  IsEnum,
+} from 'class-validator';
 import { SubmissionState } from '../../artifact/enums/submission-state.enum';
+import { RecordVisibility } from '../../shared/enums/record-visibility.enum';
 
 export class ListWorkflowDto {
   @IsUUID()
@@ -10,6 +18,8 @@ export class ListWorkflowDto {
 
   @IsString()
   description: string;
+
+  visibility: RecordVisibility;
 
   @IsArray()
   @IsString({ each: true })

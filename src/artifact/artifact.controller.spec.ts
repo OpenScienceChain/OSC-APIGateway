@@ -53,7 +53,6 @@ function makeGetDto(overrides: Partial<any> = {}) {
 describe('ArtifactController', () => {
   let controller: ArtifactController;
   let artifactService: jest.Mocked<ArtifactService>;
-  let ghwService: jest.Mocked<GhwService>;
 
   beforeEach(async () => {
     const mockArtifactService: Partial<jest.Mocked<ArtifactService>> = {
@@ -83,7 +82,6 @@ describe('ArtifactController', () => {
 
     controller = module.get<ArtifactController>(ArtifactController);
     artifactService = module.get(ArtifactService);
-    ghwService = module.get(GhwService);
   });
 
   it('should be defined', () => {
@@ -94,7 +92,8 @@ describe('ArtifactController', () => {
   describe('create', () => {
     const createDto: any = {
       title: 'New Artifact Title',
-      description: 'A description that is long enough to pass validation checks in the service layer.',
+      description:
+        'A description that is long enough to pass validation checks in the service layer.',
       submission_comment: 'A submission comment that is long enough.',
       keywords: ['k1'],
       links: ['https://example.com'],
@@ -106,7 +105,14 @@ describe('ArtifactController', () => {
     };
 
     it('should call service.create with submitterInfo extracted from req.user', async () => {
-      const req: any = { user: { username: 'alice', email: 'alice@example.com' } };
+      const req: any = {
+        user: {
+          id: 'user-1',
+          username: 'alice',
+          email: 'alice@example.com',
+          organizationId: 'org-1',
+        },
+      };
       const expected = makeListDto({ title: createDto.title });
       artifactService.create.mockResolvedValue(expected as any);
 
@@ -114,14 +120,26 @@ describe('ArtifactController', () => {
 
       expect(artifactService.create).toHaveBeenCalledWith(
         createDto,
-        { username: 'alice', email: 'alice@example.com' },
+        {
+          userId: 'user-1',
+          username: 'alice',
+          email: 'alice@example.com',
+          organizationId: 'org-1',
+        },
         undefined,
       );
       expect(result).toBe(expected);
     });
 
     it('should pass correlationId header to service.create', async () => {
-      const req: any = { user: { username: 'bob', email: 'bob@example.com' } };
+      const req: any = {
+        user: {
+          id: 'user-2',
+          username: 'bob',
+          email: 'bob@example.com',
+          organizationId: 'org-2',
+        },
+      };
       artifactService.create.mockResolvedValue(makeListDto() as any);
 
       await controller.create(req, createDto, 'corr-123');
@@ -135,23 +153,29 @@ describe('ArtifactController', () => {
 
     it('should throw UnauthorizedException when req.user is missing', async () => {
       const req: any = { user: null };
-      await expect(controller.create(req, createDto, undefined)).rejects.toThrow(
-        UnauthorizedException,
-      );
+      await expect(
+        controller.create(req, createDto, undefined),
+      ).rejects.toThrow(UnauthorizedException);
     });
 
     it('should throw UnauthorizedException when req.user.email is missing', async () => {
       const req: any = { user: { username: 'alice' } };
-      await expect(controller.create(req, createDto, undefined)).rejects.toThrow(
-        UnauthorizedException,
-      );
+      await expect(
+        controller.create(req, createDto, undefined),
+      ).rejects.toThrow(UnauthorizedException);
     });
 
     it('should throw UnauthorizedException when req.user.username is missing', async () => {
-      const req: any = { user: { email: 'alice@example.com' } };
-      await expect(controller.create(req, createDto, undefined)).rejects.toThrow(
-        UnauthorizedException,
-      );
+      const req: any = {
+        user: {
+          id: 'user-1',
+          email: 'alice@example.com',
+          organizationId: 'org-1',
+        },
+      };
+      await expect(
+        controller.create(req, createDto, undefined),
+      ).rejects.toThrow(UnauthorizedException);
     });
   });
 
@@ -181,7 +205,10 @@ describe('ArtifactController', () => {
 
       const result = await controller.findOne('some-uuid');
       expect(result).toBe(dto);
-      expect(artifactService.findOne).toHaveBeenCalledWith('some-uuid');
+      expect(artifactService.findOne).toHaveBeenCalledWith(
+        'some-uuid',
+        undefined,
+      );
     });
 
     it('should propagate exceptions from service.findOne', async () => {
@@ -195,7 +222,10 @@ describe('ArtifactController', () => {
     it('should call service.delete with the given ID', async () => {
       artifactService.delete.mockResolvedValue(undefined);
       await controller.delete('some-uuid');
-      expect(artifactService.delete).toHaveBeenCalledWith('some-uuid');
+      expect(artifactService.delete).toHaveBeenCalledWith(
+        'some-uuid',
+        undefined,
+      );
     });
 
     it('should propagate exceptions from service.delete', async () => {
@@ -217,45 +247,73 @@ describe('ArtifactController', () => {
 
       const result = await controller.updateWorker('some-uuid', workerDto);
       expect(result).toBe(updated);
-      expect(artifactService.updateWorker).toHaveBeenCalledWith('some-uuid', workerDto);
+      expect(artifactService.updateWorker).toHaveBeenCalledWith(
+        'some-uuid',
+        workerDto,
+      );
     });
 
     it('should propagate exceptions from service.updateWorker', async () => {
       artifactService.updateWorker.mockRejectedValue(new Error('bad request'));
-      await expect(controller.updateWorker('bad', {} as any)).rejects.toThrow('bad request');
+      await expect(controller.updateWorker('bad', {} as any)).rejects.toThrow(
+        'bad request',
+      );
     });
   });
 
   // ---- updateUser (PUT) ----
   describe('updateUser', () => {
     it('should call service.updateUser with user email from req and return entity', async () => {
-      const req: any = { user: { email: 'alice@example.com' } };
+      const req: any = {
+        user: {
+          id: 'user-1',
+          email: 'alice@example.com',
+          organizationId: 'org-1',
+        },
+      };
       const updateDto: any = {
-        submission_comment: 'Updated comment that is long enough to pass validation.',
+        submission_comment:
+          'Updated comment that is long enough to pass validation.',
         keywords: ['updated'],
       };
-      const updated: any = { id: 'some-uuid', submission_comment: updateDto.submission_comment };
+      const updated: any = {
+        id: 'some-uuid',
+        submission_comment: updateDto.submission_comment,
+      };
       artifactService.updateUser.mockResolvedValue(updated as ArtifactEntity);
 
-      const result = await controller.updateUser(req, 'some-uuid', updateDto, 'corr-abc');
+      const result = await controller.updateUser(
+        req,
+        'some-uuid',
+        updateDto,
+        'corr-abc',
+      );
       expect(result).toBe(updated);
       expect(artifactService.updateUser).toHaveBeenCalledWith(
         'some-uuid',
         updateDto,
         'alice@example.com',
         'corr-abc',
+        'org-1',
+        'user-1',
       );
     });
 
     it('should pass undefined email when req.user is absent', async () => {
       const req: any = {};
-      const updateDto: any = { submission_comment: 'Some comment that is long enough for test.' };
-      artifactService.updateUser.mockResolvedValue({ id: 'some-uuid' } as ArtifactEntity);
+      const updateDto: any = {
+        submission_comment: 'Some comment that is long enough for test.',
+      };
+      artifactService.updateUser.mockResolvedValue({
+        id: 'some-uuid',
+      } as ArtifactEntity);
 
       await controller.updateUser(req, 'some-uuid', updateDto, undefined);
       expect(artifactService.updateUser).toHaveBeenCalledWith(
         'some-uuid',
         updateDto,
+        undefined,
+        undefined,
         undefined,
         undefined,
       );
@@ -270,29 +328,59 @@ describe('ArtifactController', () => {
       const historyResult = { items: [], total: 0, hasMore: false };
       artifactService.getHistory.mockResolvedValue(historyResult as any);
 
-      const result = await controller.getHistory(artifactId, '0', '10', 'desc', 'true', 'corr-1');
+      const result = await controller.getHistory(
+        artifactId,
+        '0',
+        '10',
+        'desc',
+        'true',
+        'corr-1',
+      );
       expect(result).toBe(historyResult);
       expect(artifactService.getHistory).toHaveBeenCalledWith(
         artifactId,
         { offset: '0', limit: '10', order: 'desc', includeValue: 'true' },
         'corr-1',
+        undefined,
       );
     });
 
     it('should work without optional query params', async () => {
       artifactService.getHistory.mockResolvedValue({ items: [] } as any);
-      await controller.getHistory(artifactId, undefined, undefined, undefined, undefined, undefined);
+      await controller.getHistory(
+        artifactId,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+      );
       expect(artifactService.getHistory).toHaveBeenCalledWith(
         artifactId,
-        { offset: undefined, limit: undefined, order: undefined, includeValue: undefined },
+        {
+          offset: undefined,
+          limit: undefined,
+          order: undefined,
+          includeValue: undefined,
+        },
+        undefined,
         undefined,
       );
     });
 
     it('should propagate exceptions from service.getHistory', async () => {
-      artifactService.getHistory.mockRejectedValue(new Error('upstream timeout'));
+      artifactService.getHistory.mockRejectedValue(
+        new Error('upstream timeout'),
+      );
       await expect(
-        controller.getHistory(artifactId, undefined, undefined, undefined, undefined, undefined),
+        controller.getHistory(
+          artifactId,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+        ),
       ).rejects.toThrow('upstream timeout');
     });
   });
@@ -307,12 +395,18 @@ describe('ArtifactController', () => {
 
       const result = await controller.refreshHistory(artifactId, 'corr-2');
       expect(result).toBe(refreshResult);
-      expect(artifactService.refreshHistory).toHaveBeenCalledWith(artifactId, 'corr-2');
+      expect(artifactService.refreshHistory).toHaveBeenCalledWith(
+        artifactId,
+        'corr-2',
+        undefined,
+      );
     });
 
     it('should propagate exceptions from service.refreshHistory', async () => {
       artifactService.refreshHistory.mockRejectedValue(new Error('ghw error'));
-      await expect(controller.refreshHistory(artifactId, undefined)).rejects.toThrow('ghw error');
+      await expect(
+        controller.refreshHistory(artifactId, undefined),
+      ).rejects.toThrow('ghw error');
     });
   });
 });

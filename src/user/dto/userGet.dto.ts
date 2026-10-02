@@ -20,4 +20,7 @@ export class UserGetDto {
 
   @Expose()
   organizationName: string;
+
+  @Expose()
+  organizationId: string;
 }

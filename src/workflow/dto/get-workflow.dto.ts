@@ -13,6 +13,7 @@ import { SubmissionState } from '../../artifact/enums/submission-state.enum';
 import { GetOrganizationDto } from '../../artifact/dto/get-organization.dto';
 import { GitHubRepositoryDto } from './github-repository.dto';
 import { Type } from 'class-transformer';
+import { RecordVisibility } from '../../shared/enums/record-visibility.enum';
 
 export class GetWorkflowArtifactDto {
   @IsUUID()
@@ -34,6 +35,9 @@ export class GetWorkflowDto {
 
   @IsString()
   description: string;
+
+  @IsEnum(RecordVisibility)
+  visibility: RecordVisibility;
 
   @IsString()
   @Length(20, 1000)

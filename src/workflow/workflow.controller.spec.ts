@@ -73,7 +73,8 @@ describe('WorkflowController', () => {
   describe('create', () => {
     const createDto: any = {
       title: 'New Workflow Title',
-      description: 'A description that is long enough to pass validation checks in the service layer.',
+      description:
+        'A description that is long enough to pass validation checks in the service layer.',
       submission_comment: 'A submission comment that is long enough.',
       keywords: ['k1'],
       githubRepositories: [],
@@ -81,14 +82,26 @@ describe('WorkflowController', () => {
     };
 
     it('should call service.create with submitterInfo from req.user', async () => {
-      const req: any = { user: { username: 'alice', email: 'alice@example.com' } };
+      const req: any = {
+        user: {
+          id: 'user-1',
+          username: 'alice',
+          email: 'alice@example.com',
+          organizationId: 'org-1',
+        },
+      };
       const expected = makeListDto({ title: createDto.title });
       workflowService.create.mockResolvedValue(expected as any);
 
       const result = await controller.create(req, createDto, undefined);
       expect(workflowService.create).toHaveBeenCalledWith(
         createDto,
-        { username: 'alice', email: 'alice@example.com' },
+        {
+          userId: 'user-1',
+          username: 'alice',
+          email: 'alice@example.com',
+          organizationId: 'org-1',
+        },
         undefined,
       );
       expect(result).toBe(expected);
@@ -96,9 +109,9 @@ describe('WorkflowController', () => {
 
     it('should throw UnauthorizedException when req.user is missing', async () => {
       const req: any = { user: null };
-      await expect(controller.create(req, createDto, undefined)).rejects.toThrow(
-        UnauthorizedException,
-      );
+      await expect(
+        controller.create(req, createDto, undefined),
+      ).rejects.toThrow(UnauthorizedException);
     });
   });
 
@@ -122,21 +135,38 @@ describe('WorkflowController', () => {
 
   describe('updateUser', () => {
     it('should call service.updateUser with user email', async () => {
-      const req: any = { user: { email: 'alice@example.com' } };
+      const req: any = {
+        user: {
+          id: 'user-1',
+          email: 'alice@example.com',
+          organizationId: 'org-1',
+        },
+      };
       const updateDto: any = {
-        submission_comment: 'Updated comment that is long enough to pass validation.',
+        submission_comment:
+          'Updated comment that is long enough to pass validation.',
         keywords: ['updated'],
       };
-      const updated: any = { id: 'some-uuid', submission_comment: updateDto.submission_comment };
+      const updated: any = {
+        id: 'some-uuid',
+        submission_comment: updateDto.submission_comment,
+      };
       workflowService.updateUser.mockResolvedValue(updated as WorkflowEntity);
 
-      const result = await controller.updateUser(req, 'some-uuid', updateDto, 'corr-abc');
+      const result = await controller.updateUser(
+        req,
+        'some-uuid',
+        updateDto,
+        'corr-abc',
+      );
       expect(result).toBe(updated);
       expect(workflowService.updateUser).toHaveBeenCalledWith(
         'some-uuid',
         updateDto,
         'alice@example.com',
         'corr-abc',
+        'org-1',
+        'user-1',
       );
     });
   });

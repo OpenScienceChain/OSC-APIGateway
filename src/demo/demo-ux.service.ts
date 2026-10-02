@@ -14,6 +14,7 @@ import { createHmac, randomBytes } from 'crypto';
 import { Request, Response } from 'express';
 import { DataSource, LessThanOrEqual, MoreThan, Repository } from 'typeorm';
 import { DEMO_RETENTION_DAYS, DEMO_RUNTIME_ID } from './demo.constants';
+import { DemoLifecycleState } from './demo.enums';
 import { CreateDemoUxEventDto } from './dto/create-demo-ux-event.dto';
 import { CreateDemoUxFeedbackDto } from './dto/create-demo-ux-feedback.dto';
 import { DemoUxBrowserEntity } from './entities/demo-ux-browser.entity';
@@ -74,15 +75,13 @@ export class DemoUxService implements OnModuleInit, OnModuleDestroy {
     if (this.purgeTimer) clearInterval(this.purgeTimer);
   }
 
-  private phase(): Phase {
-    return this.config.get<string>('DEMO_UX_RUN_PHASE') === 'LIVE'
-      ? 'LIVE'
-      : 'REHEARSAL';
-  }
-
   private async runContext() {
     const runtime = await this.runtime.findOneBy({ id: DEMO_RUNTIME_ID });
-    return { phase: this.phase(), runId: runtime?.runId || null };
+    const liveWindow =
+      this.config.get<string>('DEMO_UX_RUN_PHASE') === 'LIVE' &&
+      runtime?.state === DemoLifecycleState.OPEN;
+    const phase: Phase = liveWindow ? 'LIVE' : 'REHEARSAL';
+    return { phase, runId: runtime?.runId || null };
   }
 
   private expiresAt(now: Date) {

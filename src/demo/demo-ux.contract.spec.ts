@@ -15,6 +15,8 @@ import { DemoUxBrowserEntity } from './entities/demo-ux-browser.entity';
 import { DemoUxCounterEntity } from './entities/demo-ux-counter.entity';
 import { DemoUxEventEntity } from './entities/demo-ux-event.entity';
 import { DemoUxFeedbackEntity } from './entities/demo-ux-feedback.entity';
+import { DEMO_RUNTIME_ID } from './demo.constants';
+import { DemoLifecycleState } from './demo.enums';
 import { DemoControlGuard } from './guards/demo-control.guard';
 import { DemoOriginGuard } from './guards/demo-origin.guard';
 import { getRepositoryToken } from '@nestjs/typeorm';
@@ -27,8 +29,11 @@ describe('anonymous UX measurement', () => {
   let browsers: Repository<DemoUxBrowserEntity>;
   let events: Repository<DemoUxEventEntity>;
   let feedback: Repository<DemoUxFeedbackEntity>;
+  let runtime: Repository<DemoRuntimeEntity>;
+  let runPhase: string;
 
   beforeEach(async () => {
+    runPhase = 'REHEARSAL';
     const entities = [
       DemoRuntimeEntity,
       DemoUxBrowserEntity,
@@ -57,7 +62,7 @@ describe('anonymous UX measurement', () => {
               ({
                 DEMO_ANALYTICS_HMAC_SECRET:
                   'analytics-secret-32-characters-tests',
-                DEMO_UX_RUN_PHASE: 'REHEARSAL',
+                DEMO_UX_RUN_PHASE: runPhase,
               })[name],
           },
         },
@@ -92,6 +97,7 @@ describe('anonymous UX measurement', () => {
     browsers = module.get(getRepositoryToken(DemoUxBrowserEntity));
     events = module.get(getRepositoryToken(DemoUxEventEntity));
     feedback = module.get(getRepositoryToken(DemoUxFeedbackEntity));
+    runtime = module.get(getRepositoryToken(DemoRuntimeEntity));
   });
 
   afterEach(async () => {
@@ -294,5 +300,33 @@ describe('anonymous UX measurement', () => {
       .set('x-demo-control-key', CONTROL_KEY)
       .expect(201);
     expect(await feedback.count()).toBe(0);
+  });
+
+  it('labels only an open configured live window as live', async () => {
+    const server = app.getHttpServer();
+    runPhase = 'LIVE';
+    const now = new Date();
+    await runtime.save({
+      id: DEMO_RUNTIME_ID,
+      state: DemoLifecycleState.SCHEDULED,
+      runId: 'autodemo1',
+      opensAt: now,
+      closesAt: new Date(now.getTime() + 60_000),
+      updatedAt: now,
+    });
+    await request(server)
+      .post('/api/v1/demo/ux-feedback')
+      .set('Origin', ORIGIN)
+      .send({ visualRating: 3 })
+      .expect(201);
+    await runtime.update(DEMO_RUNTIME_ID, { state: DemoLifecycleState.OPEN });
+    await request(server)
+      .post('/api/v1/demo/ux-feedback')
+      .set('Origin', ORIGIN)
+      .send({ visualRating: 4 })
+      .expect(201);
+    const report = await metricRequest(server).expect(200);
+    expect(report.body.survey.byPhase['REHEARSAL|autodemo1'].submitted).toBe(1);
+    expect(report.body.survey.byPhase['LIVE|autodemo1'].submitted).toBe(1);
   });
 });

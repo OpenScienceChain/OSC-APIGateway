@@ -42,8 +42,10 @@ Only fixed event names, route templates, and device buckets are accepted.
 Search terms, form values, PINs, filenames, hashes, exact record URLs, IPs,
 and user-agent strings are not stored in UX events. Responses and events are
 given a 30-day expiry and purged at startup and hourly while the API runs; the
-operator purge endpoint also supports cleanup. Set `DEMO_UX_RUN_PHASE=LIVE` for the live demo; otherwise
-rows are labelled `REHEARSAL`. The run ID comes from the existing demo status.
+operator purge endpoint also supports cleanup. With `DEMO_UX_RUN_PHASE=LIVE`,
+only records written while the demo runtime is `OPEN` are labelled `LIVE`;
+pre-demo and closed-window records remain `REHEARSAL`. Without the setting,
+all records are rehearsal. The run ID comes from the existing demo status.
 
 Protected endpoints require the existing demo control key:
 

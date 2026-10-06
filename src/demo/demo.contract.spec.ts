@@ -2017,6 +2017,61 @@ describe('US-RSE 2026 demonstration contract', () => {
       .expect(400);
   });
 
+  it('creates and revises workflows with more than six confirmed linked artifacts', async () => {
+    const artifactIds: string[] = [];
+    for (let ownerIndex = 0; ownerIndex < 3; ownerIndex += 1) {
+      const owner = accountSession(
+        await accountRequest('register', `linkowner${ownerIndex}`).expect(201),
+      );
+      for (let artifactIndex = 0; artifactIndex < 3; artifactIndex += 1) {
+        const artifact = await mutate(owner)
+          .artifact(artifactBody())
+          .expect(201);
+        await confirmArtifact(artifact.body.id);
+        artifactIds.push(artifact.body.id);
+      }
+    }
+    const workflowOwner = accountSession(
+      await accountRequest('register', 'manylinksowner').expect(201),
+    );
+    const workflow = await mutate(workflowOwner)
+      .workflow({
+        requestId: randomUUID(),
+        artifactIds: artifactIds.slice(0, 8),
+        researchContext: 'REPRODUCIBLE_ANALYSIS',
+        title: 'Eight linked research inputs',
+        description:
+          'This workflow links enough confirmed artifacts to exercise the public detail pagination.',
+        submissionComment: 'Initial submission with eight linked artifacts.',
+        keywords: [],
+        githubRepositories: [],
+      })
+      .expect(201);
+    expect(workflow.body.artifactIds).toHaveLength(8);
+    await dataSource.getRepository(WorkflowEntity).update(workflow.body.id, {
+      submissionState: SubmissionState.SUCCESS,
+      blockchainTxId: 'confirmed-many-links',
+    });
+    const revised = await request(app.getHttpServer())
+      .patch(`/api/v1/demo/workflows/${workflow.body.id}`)
+      .set('Origin', ORIGIN)
+      .set('Cookie', workflowOwner.cookie)
+      .set('X-Demo-CSRF', workflowOwner.csrfToken)
+      .send({
+        requestId: randomUUID(),
+        artifactIds,
+        keywords: [],
+        githubRepositories: [],
+        submissionComment: 'Revised workflow with nine confirmed artifacts.',
+      })
+      .expect(200);
+    expect(revised.body.artifactIds).toHaveLength(9);
+    const publicDetail = await request(app.getHttpServer())
+      .get(`/api/v1/demo/public/workflows/${workflow.body.id}`)
+      .expect(200);
+    expect(publicDetail.body.artifactIds).toHaveLength(9);
+  });
+
   it('records bounded folder hashes and publishes generated manifest data without opening guarded writes', async () => {
     const owner = await createGuest();
     const other = await createGuest();

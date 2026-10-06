@@ -1651,31 +1651,46 @@ export class DemoService {
     artifactIds: string[],
     runtime: DemoRuntimeEntity,
   ) {
-    for (const artifactId of artifactIds) {
-      let artifact: ArtifactEntity;
-      try {
-        const eligible = await this.demoRecord(
-          DemoContributionType.ARTIFACT,
-          artifactId,
-          true,
-          undefined,
-          runtime,
-        );
-        artifact = eligible.record as ArtifactEntity;
-      } catch (error) {
-        if (!(error instanceof NotFoundException)) throw error;
-        throw new ForbiddenException(
-          'Workflows may link only eligible artifacts from this demonstration run',
-        );
-      }
-      if (
-        artifact.organization.id !== principal.organizationId ||
-        artifact.submissionState !== SubmissionState.SUCCESS ||
-        !artifact.blockchainTxId?.trim()
-      ) {
-        throw new ForbiddenException(
-          'Workflows may link only confirmed artifacts',
-        );
+    for (let offset = 0; offset < artifactIds.length; offset += 200) {
+      const ids = artifactIds.slice(offset, offset + 200);
+      const [contributions, artifacts] = await Promise.all([
+        this.contributions.findBy({
+          recordType: DemoContributionType.ARTIFACT,
+          recordId: In(ids),
+        }),
+        this.artifacts.find({
+          where: { id: In(ids) },
+          relations: { organization: true },
+        }),
+      ]);
+      const contributionsById = new Map(
+        contributions.map((contribution) => [
+          contribution.recordId,
+          contribution,
+        ]),
+      );
+      const artifactsById = new Map(
+        artifacts.map((artifact) => [artifact.id, artifact]),
+      );
+      for (const id of ids) {
+        const artifact = artifactsById.get(id);
+        if (
+          !artifact ||
+          !this.isDemoRecord(artifact, contributionsById.get(id), runtime, true)
+        ) {
+          throw new ForbiddenException(
+            'Workflows may link only eligible artifacts from this demonstration run',
+          );
+        }
+        if (
+          artifact.organization.id !== principal.organizationId ||
+          artifact.submissionState !== SubmissionState.SUCCESS ||
+          !artifact.blockchainTxId?.trim()
+        ) {
+          throw new ForbiddenException(
+            'Workflows may link only confirmed artifacts',
+          );
+        }
       }
     }
   }

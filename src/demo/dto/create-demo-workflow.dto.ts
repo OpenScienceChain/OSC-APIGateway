@@ -56,7 +56,6 @@ export class CreateDemoWorkflowDto {
 
   @IsArray()
   @ArrayMinSize(1)
-  @ArrayMaxSize(3)
   @ArrayUnique()
   @IsUUID('4', { each: true })
   artifactIds: string[];

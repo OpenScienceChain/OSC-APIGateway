@@ -1,5 +1,5 @@
 # Node 24 is the active LTS line. The digest pins the multi-platform image index.
-FROM node:24.20.0-alpine3.24@sha256:e67514e5d0f6c46656005e1b693b2ec9d52e80b641307de684d4a015ba7a4eaf AS build
+FROM node:26.12.0-alpine3.24@sha256:6f08a523443ddedf52941874c203475b0ad503e859ad70cb26ab8be9a517dbd5 AS build
 WORKDIR /app
 # Build tools needed for native addons (e.g. bcrypt)
 RUN apk add --no-cache python3 make g++
@@ -14,7 +14,7 @@ RUN python3 scripts/security/check_npm_supply_chain.py --repo . --offline-review
 COPY . .
 RUN npm run build && npm prune --omit=dev --ignore-scripts
 
-FROM node:24.20.0-alpine3.24@sha256:e67514e5d0f6c46656005e1b693b2ec9d52e80b641307de684d4a015ba7a4eaf AS production
+FROM node:26.12.0-alpine3.24@sha256:6f08a523443ddedf52941874c203475b0ad503e859ad70cb26ab8be9a517dbd5 AS production
 WORKDIR /app
 
 # Require the fixed OpenSSL floor from Alpine's repository. The image scan
